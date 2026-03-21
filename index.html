@@ -376,7 +376,7 @@ input[type="range"]::-webkit-slider-thumb {
     <div id="header-stats">
       <div class="stat">
         <span class="stat-label">ORBIT:</span>
-        <span class="stat-value" id="hud-orbit">550 km</span>
+        <span class="stat-value" id="hud-orbit">600 km SSO</span>
       </div>
       <div class="stat">
         <span class="stat-label">TIME:</span>
@@ -453,15 +453,18 @@ input[type="range"]::-webkit-slider-thumb {
     </div>
 
     <div class="panel-section">
-      <div class="panel-title">Laser Links</div>
+      <div class="panel-title">Starlink Laser Links</div>
       <div class="control-row">
-        <label>Uplink Active</label>
+        <label>ISL Uplink</label>
         <span class="value" id="val-uplink">ON</span>
       </div>
       <button class="btn active" id="btn-uplink">Toggle Uplink</button>
       <div class="control-row">
         <label>Bandwidth</label>
         <span class="value" id="val-bandwidth">1.0 Tbps</span>
+      </div>
+      <div class="control-row" style="font-size:10px; color:#666;">
+        <label>Data relay via Starlink constellation</label>
       </div>
     </div>
   </div>
@@ -639,8 +642,13 @@ const PHYSICS = {
 // ============================================================
 const INITIAL_CONFIG = {
   // Orbital parameters
-  altitude: 550,           // km above Earth's surface
-  inclination: 53,         // degrees (Starlink shell)
+  // SpaceX FCC filing: sun-synchronous orbits at 500-2000km to maximize sunlight
+  // Sun-synchronous dawn/dusk orbit: beta angle ~90°, >99% sunlit
+  altitude: 600,           // km above Earth's surface (sun-sync typical)
+  inclination: 97.8,       // degrees (sun-synchronous at 600km)
+  orbitType: 'sun-sync',   // 'sun-sync' (dawn/dusk) or 'standard'
+  betaAngle: 85,           // degrees - angle between orbital plane and sun vector
+                           // 90° = perfect dawn/dusk (0% eclipse), 0° = max eclipse
 
   // Solar panels
   solarPanelArea: 120,     // m² (large V3-class)
@@ -662,10 +670,12 @@ const INITIAL_CONFIG = {
   systemPower: 800,        // watts baseline systems
   laserLinkPower: 400,     // watts for laser inter-satellite link
 
-  // Battery
-  batteryCapacity: 15000,  // Wh (lithium-ion)
-  batteryMaxCharge: 5000,  // watts max charge rate
-  batteryMaxDischarge: 12000, // watts max discharge rate
+  // Battery - much smaller for sun-sync orbit (>99% sunlit)
+  // Only needed as buffer for brief shadow transits and power transients
+  // Standard orbit would need ~50 kWh; sun-sync needs minimal
+  batteryCapacity: 3000,   // Wh (lithium-ion) - small buffer
+  batteryMaxCharge: 3000,  // watts max charge rate
+  batteryMaxDischarge: 8000, // watts max discharge rate
   batteryEfficiency: 0.92, // round-trip efficiency
 
   // Thermal
@@ -719,7 +729,7 @@ let state = {
   radiatorDeployment: 100, // percentage deployed
 
   // Power
-  batteryLevel: 15000,     // Wh remaining
+  batteryLevel: 3000,      // Wh remaining
   batteryMode: 'auto',     // auto, charge, discharge
   netPower: 0,
   totalPowerDraw: 0,
@@ -760,15 +770,24 @@ function computeOrbitalPeriod(altitudeKm) {
   return 2 * Math.PI * Math.sqrt(Math.pow(r, 3) / PHYSICS.GM);
 }
 
-function computeEclipseFraction(altitudeKm) {
+function computeEclipseFraction(altitudeKm, betaAngleDeg) {
   const r = PHYSICS.EARTH_RADIUS + altitudeKm;
-  // Half-angle of Earth's shadow cone (simplified, cylindrical shadow)
-  const sinHalfAngle = PHYSICS.EARTH_RADIUS / r;
-  const halfAngle = Math.asin(sinHalfAngle);
-  // Fraction of orbit in shadow (for circular orbit with 0 beta angle)
-  // Varies with beta angle (angle between orbital plane and sun direction)
-  // For simplicity, use average beta angle effect
-  return halfAngle / Math.PI;
+  // Critical beta angle: above this, no eclipse occurs
+  // β* = arcsin(R_earth / (R_earth + h))
+  const betaCritical = Math.asin(PHYSICS.EARTH_RADIUS / r) * 180 / Math.PI;
+  const beta = Math.abs(betaAngleDeg || 0);
+
+  // If beta angle exceeds critical angle → no eclipse (sun-sync dawn/dusk orbit)
+  if (beta >= betaCritical) return 0;
+
+  // Eclipse fraction depends on beta angle
+  // f = (1/π) * arccos(sqrt(h² + 2Rh) / ((R+h) * cos(β)))
+  const h = altitudeKm;
+  const R = PHYSICS.EARTH_RADIUS;
+  const cosB = Math.cos(beta * Math.PI / 180);
+  const arg = Math.sqrt(h * h + 2 * R * h) / ((R + h) * cosB);
+  if (arg >= 1) return 0; // no eclipse
+  return Math.acos(arg) / Math.PI;
 }
 
 function isInEclipse(orbitalAngle, eclipseFraction) {
@@ -869,7 +888,7 @@ function updateSimulation(dtReal) {
   // --- Orbital Position ---
   if (state.orbitalPeriod === 0) {
     state.orbitalPeriod = computeOrbitalPeriod(state.config.altitude);
-    state.eclipseFraction = computeEclipseFraction(state.config.altitude);
+    state.eclipseFraction = computeEclipseFraction(state.config.altitude, state.config.betaAngle);
   }
   state.orbitalAngle = (state.orbitalAngle + (2 * Math.PI * dt / state.orbitalPeriod)) % (2 * Math.PI);
   state.inEclipse = isInEclipse(state.orbitalAngle, state.eclipseFraction);
@@ -1359,10 +1378,75 @@ function drawScene() {
   ctx.font = '10px monospace';
   ctx.fillText('SUN →', sunX - 50, sunY + 4);
 
+  // Starlink relay constellation (comms satellites in nearby orbits)
+  // SpaceX datacenter sats relay data via Starlink's laser inter-satellite links
+  const starlinkOrbitRadius = orbitRadius - 12;
+  if (!drawScene._starlinkAngles) {
+    drawScene._starlinkAngles = [];
+    for (let i = 0; i < 8; i++) {
+      drawScene._starlinkAngles.push((i / 8) * Math.PI * 2 + Math.random() * 0.3);
+    }
+  }
+  // Draw Starlink orbit path
+  ctx.strokeStyle = 'rgba(100,200,100,0.08)';
+  ctx.lineWidth = 1;
+  ctx.setLineDash([2, 6]);
+  ctx.beginPath();
+  ctx.arc(cx, cy, starlinkOrbitRadius, 0, Math.PI * 2);
+  ctx.stroke();
+  ctx.setLineDash([]);
+
+  // Draw individual Starlink sats
+  const starlinkDrift = state.simTime * 2 * Math.PI / (computeOrbitalPeriod(550) || 5730);
+  for (let i = 0; i < drawScene._starlinkAngles.length; i++) {
+    const slAngle = (drawScene._starlinkAngles[i] + starlinkDrift) % (Math.PI * 2);
+    const slX = cx + starlinkOrbitRadius * Math.cos(slAngle);
+    const slY = cy + starlinkOrbitRadius * Math.sin(slAngle);
+
+    // Small Starlink sat marker
+    ctx.fillStyle = 'rgba(100,200,100,0.6)';
+    ctx.beginPath();
+    ctx.arc(slX, slY, 2, 0, Math.PI * 2);
+    ctx.fill();
+
+    // Tiny solar panel lines
+    ctx.strokeStyle = 'rgba(100,200,100,0.4)';
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    ctx.moveTo(slX - 5, slY);
+    ctx.lineTo(slX + 5, slY);
+    ctx.stroke();
+  }
+
+  // Label
+  ctx.fillStyle = 'rgba(100,200,100,0.4)';
+  ctx.font = '9px monospace';
+  ctx.fillText('STARLINK RELAY CONSTELLATION', cx + starlinkOrbitRadius * 0.5, cy - starlinkOrbitRadius - 5);
+
   // Satellite position
   const satAngle = state.orbitalAngle;
   const satX = cx + orbitRadius * Math.cos(satAngle);
   const satY = cy + orbitRadius * Math.sin(satAngle);
+
+  // Laser links to nearest Starlink sats
+  if (state.uplinkActive) {
+    for (let i = 0; i < drawScene._starlinkAngles.length; i++) {
+      const slAngle = (drawScene._starlinkAngles[i] + starlinkDrift) % (Math.PI * 2);
+      const angDiff = Math.abs(((slAngle - satAngle + Math.PI) % (Math.PI * 2)) - Math.PI);
+      if (angDiff < 0.5) { // within range
+        const slX = cx + starlinkOrbitRadius * Math.cos(slAngle);
+        const slY = cy + starlinkOrbitRadius * Math.sin(slAngle);
+        ctx.strokeStyle = `rgba(0, 255, 100, ${0.15 + Math.sin(state.simTime * 3) * 0.05})`;
+        ctx.lineWidth = 1;
+        ctx.setLineDash([3, 5]);
+        ctx.beginPath();
+        ctx.moveTo(satX, satY);
+        ctx.lineTo(slX, slY);
+        ctx.stroke();
+        ctx.setLineDash([]);
+      }
+    }
+  }
 
   // Solar flare effect
   if (state.solarFlareActive) {
@@ -1383,11 +1467,16 @@ function drawScene() {
   // Orbit info text
   ctx.fillStyle = '#4fc3f7';
   ctx.font = '11px monospace';
-  ctx.fillText(`Altitude: ${state.config.altitude} km`, 10, 20);
-  ctx.fillText(`Orbital Period: ${(state.orbitalPeriod / 60).toFixed(1)} min`, 10, 35);
-  ctx.fillText(`Eclipse: ${(state.eclipseFraction * 100).toFixed(1)}% of orbit`, 10, 50);
+  const orbitName = state.config.orbitType === 'sun-sync' ? 'Sun-Synchronous Dawn/Dusk' : 'Standard LEO';
+  ctx.fillText(`${orbitName} | ${state.config.altitude} km | β=${state.config.betaAngle}°`, 10, 20);
+  ctx.fillText(`Orbital Period: ${(state.orbitalPeriod / 60).toFixed(1)} min | Eclipse: ${(state.eclipseFraction * 100).toFixed(1)}%`, 10, 35);
   ctx.fillStyle = state.inEclipse ? '#f44336' : '#66bb6a';
-  ctx.fillText(state.inEclipse ? '● IN ECLIPSE' : '● IN SUNLIGHT', 10, 65);
+  ctx.fillText(state.inEclipse ? '● IN ECLIPSE' : '● CONTINUOUS SUNLIGHT', 10, 50);
+  if (state.eclipseFraction === 0) {
+    ctx.fillStyle = 'rgba(102,187,106,0.5)';
+    ctx.font = '10px monospace';
+    ctx.fillText('β > β* — orbit never enters Earth\'s shadow', 10, 65);
+  }
 
   let alertY = 85;
   if (state.inSAA) {
@@ -1505,7 +1594,8 @@ function drawSatellite(x, y, angle) {
 // ============================================================
 function updateUI() {
   // Header
-  document.getElementById('hud-orbit').textContent = state.config.altitude + ' km';
+  const orbitLabel = state.config.orbitType === 'sun-sync' ? ' km SSO' : ' km LEO';
+  document.getElementById('hud-orbit').textContent = state.config.altitude + orbitLabel;
   document.getElementById('hud-time').textContent = formatTime(state.simTime);
   document.getElementById('hud-credits').textContent = '$' + state.credits.toLocaleString();
   document.getElementById('hud-day').textContent = state.day;
@@ -1589,15 +1679,26 @@ function updateUI() {
   `).join('') || '<div style="color:#555;font-size:11px">No active jobs</div>';
 }
 
+let _lastUpgradeHash = '';
 function renderUpgrades() {
+  // Only re-render when state actually changes (prevents click interruption from DOM rebuilds)
+  const hash = UPGRADES.map(u => u.owned ? '1' : '0').join('') + '|' + state.credits;
+  if (hash === _lastUpgradeHash) return;
+  _lastUpgradeHash = hash;
+
   const el = document.getElementById('upgrades-list');
-  el.innerHTML = UPGRADES.map(u => {
+  el.innerHTML = '';
+  UPGRADES.forEach(u => {
+    const div = document.createElement('div');
     const classes = u.owned ? 'upgrade-item owned' : (state.credits >= u.cost ? 'upgrade-item affordable' : 'upgrade-item');
-    return `<div class="${classes}" onclick="purchaseUpgrade('${u.id}')">
-      <div><span class="upgrade-name">${u.name}</span><span class="upgrade-cost">${u.owned ? 'OWNED' : '$'+u.cost.toLocaleString()}</span></div>
-      <div class="upgrade-desc">${u.desc}</div>
-    </div>`;
-  }).join('');
+    div.className = classes;
+    div.innerHTML = `<div><span class="upgrade-name">${u.name}</span><span class="upgrade-cost">${u.owned ? 'OWNED' : '$'+u.cost.toLocaleString()}</span></div>
+      <div class="upgrade-desc">${u.desc}</div>`;
+    if (!u.owned) {
+      div.addEventListener('click', () => purchaseUpgrade(u.id));
+    }
+    el.appendChild(div);
+  });
 }
 
 // ============================================================
@@ -1704,11 +1805,14 @@ function init() {
 
   // Compute orbital period
   state.orbitalPeriod = computeOrbitalPeriod(state.config.altitude);
-  state.eclipseFraction = computeEclipseFraction(state.config.altitude);
+  state.eclipseFraction = computeEclipseFraction(state.config.altitude, state.config.betaAngle);
 
-  addLog('info', 'Satellite SAT-DC1 deployed to ' + state.config.altitude + 'km orbit');
+  const orbitDesc = state.config.orbitType === 'sun-sync'
+    ? `sun-synchronous dawn/dusk orbit (β=${state.config.betaAngle}°)`
+    : `standard LEO orbit (i=${state.config.inclination}°)`;
+  addLog('info', `Satellite SAT-DC1 deployed to ${state.config.altitude}km ${orbitDesc}`);
   addLog('info', `Orbital period: ${(state.orbitalPeriod / 60).toFixed(1)} min`);
-  addLog('info', `Eclipse fraction: ${(state.eclipseFraction * 100).toFixed(1)}%`);
+  addLog('info', `Eclipse fraction: ${(state.eclipseFraction * 100).toFixed(1)}% — ${state.eclipseFraction === 0 ? 'CONTINUOUS SUNLIGHT' : 'periodic shadow'}`);
   addLog('info', `Solar panels: ${state.config.solarPanelArea}m² @ ${(state.config.solarCellEfficiency*100)}% efficiency`);
   addLog('info', `Radiators: ${state.config.radiatorArea}m² @ ε=${state.config.radiatorEmissivity}`);
   addLog('info', `Compute: ${state.config.computeModules} modules × ${state.config.tflopsPerModule} TFLOPS`);
