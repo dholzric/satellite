@@ -1,0 +1,1645 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Orbital Datacenter - SpaceX Satellite Simulation</title>
+<style>
+* { margin: 0; padding: 0; box-sizing: border-box; }
+
+body {
+  background: #0a0a1a;
+  color: #e0e0e0;
+  font-family: 'Courier New', monospace;
+  overflow: hidden;
+  height: 100vh;
+  user-select: none;
+}
+
+#game-container {
+  display: grid;
+  grid-template-columns: 280px 1fr 300px;
+  grid-template-rows: 50px 1fr 180px;
+  height: 100vh;
+  gap: 2px;
+}
+
+/* Header */
+#header {
+  grid-column: 1 / -1;
+  background: linear-gradient(90deg, #0d1b2a, #1b2838);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0 20px;
+  border-bottom: 1px solid #1e3a5f;
+}
+
+#header h1 {
+  font-size: 16px;
+  color: #4fc3f7;
+  letter-spacing: 2px;
+  text-transform: uppercase;
+}
+
+#header-stats {
+  display: flex;
+  gap: 24px;
+  font-size: 12px;
+}
+
+#header-stats .stat {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+#header-stats .stat-label { color: #888; }
+#header-stats .stat-value { color: #4fc3f7; font-weight: bold; }
+
+/* Left Panel - Controls */
+#left-panel {
+  background: #0d1117;
+  border-right: 1px solid #1e3a5f;
+  padding: 12px;
+  overflow-y: auto;
+}
+
+.panel-section {
+  margin-bottom: 16px;
+}
+
+.panel-title {
+  font-size: 11px;
+  color: #4fc3f7;
+  text-transform: uppercase;
+  letter-spacing: 1.5px;
+  margin-bottom: 8px;
+  padding-bottom: 4px;
+  border-bottom: 1px solid #1e3a5f;
+}
+
+.control-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 6px;
+  font-size: 12px;
+}
+
+.control-row label { color: #aaa; }
+.control-row .value { color: #fff; min-width: 50px; text-align: right; }
+
+input[type="range"] {
+  -webkit-appearance: none;
+  width: 100%;
+  height: 4px;
+  background: #1e3a5f;
+  border-radius: 2px;
+  outline: none;
+  margin: 4px 0;
+}
+
+input[type="range"]::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  width: 14px;
+  height: 14px;
+  background: #4fc3f7;
+  border-radius: 50%;
+  cursor: pointer;
+}
+
+.btn {
+  display: block;
+  width: 100%;
+  padding: 8px;
+  margin: 4px 0;
+  background: #1e3a5f;
+  color: #4fc3f7;
+  border: 1px solid #2e5a8f;
+  border-radius: 4px;
+  font-family: inherit;
+  font-size: 11px;
+  cursor: pointer;
+  text-transform: uppercase;
+  letter-spacing: 1px;
+  transition: all 0.2s;
+}
+
+.btn:hover { background: #2e5a8f; }
+.btn.active { background: #4fc3f7; color: #0a0a1a; }
+.btn.danger { border-color: #f44336; color: #f44336; }
+.btn.danger:hover { background: #f44336; color: #fff; }
+
+/* Main viewport */
+#viewport {
+  background: #000;
+  position: relative;
+  overflow: hidden;
+}
+
+#main-canvas {
+  width: 100%;
+  height: 100%;
+}
+
+/* Right Panel - Telemetry */
+#right-panel {
+  background: #0d1117;
+  border-left: 1px solid #1e3a5f;
+  padding: 12px;
+  overflow-y: auto;
+}
+
+.gauge {
+  margin-bottom: 12px;
+}
+
+.gauge-header {
+  display: flex;
+  justify-content: space-between;
+  font-size: 11px;
+  margin-bottom: 3px;
+}
+
+.gauge-label { color: #888; }
+.gauge-value { color: #fff; font-weight: bold; }
+
+.gauge-bar {
+  height: 6px;
+  background: #1a1a2e;
+  border-radius: 3px;
+  overflow: hidden;
+}
+
+.gauge-fill {
+  height: 100%;
+  border-radius: 3px;
+  transition: width 0.3s, background 0.3s;
+}
+
+.gauge-fill.power { background: #ffd700; }
+.gauge-fill.heat { background: #ff6b35; }
+.gauge-fill.compute { background: #4fc3f7; }
+.gauge-fill.battery { background: #66bb6a; }
+.gauge-fill.danger { background: #f44336; }
+.gauge-fill.warning { background: #ff9800; }
+
+.temp-display {
+  font-size: 28px;
+  font-weight: bold;
+  text-align: center;
+  padding: 10px;
+  margin: 8px 0;
+  border-radius: 6px;
+  border: 1px solid #1e3a5f;
+}
+
+.temp-ok { color: #66bb6a; border-color: #2e7d32; }
+.temp-warn { color: #ff9800; border-color: #e65100; }
+.temp-danger { color: #f44336; border-color: #b71c1c; animation: pulse 1s infinite; }
+
+@keyframes pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.5; }
+}
+
+/* Bottom Panel - Log & Jobs */
+#bottom-panel {
+  grid-column: 1 / -1;
+  background: #0d1117;
+  border-top: 1px solid #1e3a5f;
+  display: grid;
+  grid-template-columns: 1fr 1fr 1fr;
+  gap: 1px;
+}
+
+.bottom-section {
+  padding: 10px;
+  overflow-y: auto;
+}
+
+.bottom-section-title {
+  font-size: 10px;
+  color: #4fc3f7;
+  text-transform: uppercase;
+  letter-spacing: 1.5px;
+  margin-bottom: 6px;
+}
+
+#event-log {
+  font-size: 11px;
+  line-height: 1.5;
+}
+
+#event-log .log-entry { margin-bottom: 2px; }
+#event-log .log-time { color: #555; }
+#event-log .log-info { color: #4fc3f7; }
+#event-log .log-warn { color: #ff9800; }
+#event-log .log-error { color: #f44336; }
+#event-log .log-success { color: #66bb6a; }
+
+.job-card {
+  background: #1a1a2e;
+  border: 1px solid #1e3a5f;
+  border-radius: 4px;
+  padding: 6px 8px;
+  margin-bottom: 4px;
+  font-size: 11px;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+
+.job-card .job-name { color: #ddd; }
+.job-card .job-reward { color: #ffd700; }
+.job-card .job-power { color: #ff6b35; }
+
+.job-progress {
+  height: 3px;
+  background: #1e3a5f;
+  border-radius: 2px;
+  margin-top: 4px;
+}
+
+.job-progress-fill {
+  height: 100%;
+  background: #4fc3f7;
+  border-radius: 2px;
+  transition: width 0.5s;
+}
+
+.upgrade-item {
+  background: #1a1a2e;
+  border: 1px solid #1e3a5f;
+  border-radius: 4px;
+  padding: 6px 8px;
+  margin-bottom: 4px;
+  font-size: 11px;
+  cursor: pointer;
+  transition: all 0.2s;
+}
+
+.upgrade-item:hover { border-color: #4fc3f7; }
+.upgrade-item.affordable { border-color: #66bb6a; }
+.upgrade-item.owned { border-color: #555; opacity: 0.5; cursor: default; }
+
+.upgrade-name { color: #ddd; }
+.upgrade-cost { color: #ffd700; float: right; }
+.upgrade-desc { color: #777; font-size: 10px; margin-top: 2px; }
+
+/* Speed controls */
+.speed-controls {
+  display: flex;
+  gap: 4px;
+}
+
+.speed-btn {
+  padding: 4px 10px;
+  background: #1e3a5f;
+  border: 1px solid #2e5a8f;
+  color: #4fc3f7;
+  font-family: inherit;
+  font-size: 11px;
+  cursor: pointer;
+  border-radius: 3px;
+}
+
+.speed-btn.active { background: #4fc3f7; color: #0a0a1a; }
+
+/* Game Over Overlay */
+#game-over {
+  display: none;
+  position: fixed;
+  inset: 0;
+  background: rgba(0,0,0,0.85);
+  z-index: 100;
+  justify-content: center;
+  align-items: center;
+  flex-direction: column;
+}
+
+#game-over.show { display: flex; }
+
+#game-over h2 {
+  font-size: 36px;
+  color: #f44336;
+  margin-bottom: 16px;
+}
+
+#game-over p {
+  font-size: 16px;
+  color: #aaa;
+  margin-bottom: 24px;
+}
+
+#game-over button {
+  padding: 12px 32px;
+  font-size: 16px;
+}
+
+/* Tooltip */
+.tooltip {
+  position: relative;
+}
+.tooltip::after {
+  content: attr(data-tip);
+  position: absolute;
+  bottom: 100%;
+  left: 50%;
+  transform: translateX(-50%);
+  background: #1a1a2e;
+  border: 1px solid #4fc3f7;
+  color: #ddd;
+  padding: 4px 8px;
+  border-radius: 4px;
+  font-size: 10px;
+  white-space: nowrap;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.2s;
+}
+.tooltip:hover::after { opacity: 1; }
+
+/* Scrollbar */
+::-webkit-scrollbar { width: 4px; }
+::-webkit-scrollbar-track { background: #0a0a1a; }
+::-webkit-scrollbar-thumb { background: #1e3a5f; border-radius: 2px; }
+</style>
+</head>
+<body>
+
+<div id="game-container">
+  <!-- Header -->
+  <div id="header">
+    <h1>Orbital Datacenter Sim</h1>
+    <div id="header-stats">
+      <div class="stat">
+        <span class="stat-label">ORBIT:</span>
+        <span class="stat-value" id="hud-orbit">550 km</span>
+      </div>
+      <div class="stat">
+        <span class="stat-label">TIME:</span>
+        <span class="stat-value" id="hud-time">00:00:00</span>
+      </div>
+      <div class="stat">
+        <span class="stat-label">CREDITS:</span>
+        <span class="stat-value" id="hud-credits">$0</span>
+      </div>
+      <div class="stat">
+        <span class="stat-label">DAY:</span>
+        <span class="stat-value" id="hud-day">1</span>
+      </div>
+      <div class="speed-controls">
+        <button class="speed-btn" data-speed="0">||</button>
+        <button class="speed-btn active" data-speed="1">1x</button>
+        <button class="speed-btn" data-speed="5">5x</button>
+        <button class="speed-btn" data-speed="20">20x</button>
+        <button class="speed-btn" data-speed="100">100x</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Left Panel - Controls -->
+  <div id="left-panel">
+    <div class="panel-section">
+      <div class="panel-title">Compute Modules</div>
+      <div class="control-row">
+        <label>Active Modules</label>
+        <span class="value" id="val-compute-modules">4 / 4</span>
+      </div>
+      <input type="range" id="ctrl-compute" min="0" max="4" value="4" step="1">
+      <div class="control-row">
+        <label>Clock Speed</label>
+        <span class="value" id="val-clock">100%</span>
+      </div>
+      <input type="range" id="ctrl-clock" min="10" max="150" value="100" step="5">
+      <div class="control-row" style="font-size:10px; color:#666;">
+        <label>Overclock >100% increases heat exponentially</label>
+      </div>
+    </div>
+
+    <div class="panel-section">
+      <div class="panel-title">Solar Array</div>
+      <div class="control-row">
+        <label>Panel Angle</label>
+        <span class="value" id="val-panel-angle">AUTO</span>
+      </div>
+      <input type="range" id="ctrl-panel-angle" min="0" max="90" value="90" step="1">
+      <button class="btn active" id="btn-auto-track">Auto Sun-Track</button>
+    </div>
+
+    <div class="panel-section">
+      <div class="panel-title">Radiators</div>
+      <div class="control-row">
+        <label>Deployed</label>
+        <span class="value" id="val-radiators">100%</span>
+      </div>
+      <input type="range" id="ctrl-radiators" min="0" max="100" value="100" step="5">
+      <div class="control-row" style="font-size:10px; color:#666;">
+        <label>Retract during debris events</label>
+      </div>
+    </div>
+
+    <div class="panel-section">
+      <div class="panel-title">Power Management</div>
+      <div class="control-row">
+        <label>Battery Mode</label>
+        <span class="value" id="val-battery-mode">AUTO</span>
+      </div>
+      <button class="btn active" id="btn-battery-auto">Auto</button>
+      <button class="btn" id="btn-battery-charge">Force Charge</button>
+      <button class="btn" id="btn-battery-discharge">Force Discharge</button>
+    </div>
+
+    <div class="panel-section">
+      <div class="panel-title">Laser Links</div>
+      <div class="control-row">
+        <label>Uplink Active</label>
+        <span class="value" id="val-uplink">ON</span>
+      </div>
+      <button class="btn active" id="btn-uplink">Toggle Uplink</button>
+      <div class="control-row">
+        <label>Bandwidth</label>
+        <span class="value" id="val-bandwidth">1.0 Tbps</span>
+      </div>
+    </div>
+  </div>
+
+  <!-- Main Viewport -->
+  <div id="viewport">
+    <canvas id="main-canvas"></canvas>
+  </div>
+
+  <!-- Right Panel - Telemetry -->
+  <div id="right-panel">
+    <div class="panel-section">
+      <div class="panel-title">Core Temperature</div>
+      <div class="temp-display temp-ok" id="temp-display">295 K</div>
+      <div style="display:flex; justify-content:space-between; font-size:10px; color:#666; margin-top:2px;">
+        <span>230K min</span>
+        <span>370K max</span>
+      </div>
+    </div>
+
+    <div class="panel-section">
+      <div class="panel-title">Power Budget</div>
+      <div class="gauge">
+        <div class="gauge-header">
+          <span class="gauge-label">Solar Generation</span>
+          <span class="gauge-value" id="val-solar-gen">0 W</span>
+        </div>
+        <div class="gauge-bar"><div class="gauge-fill power" id="bar-solar" style="width:0%"></div></div>
+      </div>
+      <div class="gauge">
+        <div class="gauge-header">
+          <span class="gauge-label">Compute Draw</span>
+          <span class="gauge-value" id="val-compute-draw">0 W</span>
+        </div>
+        <div class="gauge-bar"><div class="gauge-fill compute" id="bar-compute" style="width:0%"></div></div>
+      </div>
+      <div class="gauge">
+        <div class="gauge-header">
+          <span class="gauge-label">System Draw</span>
+          <span class="gauge-value" id="val-system-draw">0 W</span>
+        </div>
+        <div class="gauge-bar"><div class="gauge-fill compute" id="bar-system" style="width:0%"></div></div>
+      </div>
+      <div class="gauge">
+        <div class="gauge-header">
+          <span class="gauge-label">Net Power</span>
+          <span class="gauge-value" id="val-net-power">0 W</span>
+        </div>
+      </div>
+      <div class="gauge">
+        <div class="gauge-header">
+          <span class="gauge-label">Battery</span>
+          <span class="gauge-value" id="val-battery">100%</span>
+        </div>
+        <div class="gauge-bar"><div class="gauge-fill battery" id="bar-battery" style="width:100%"></div></div>
+      </div>
+    </div>
+
+    <div class="panel-section">
+      <div class="panel-title">Thermal</div>
+      <div class="gauge">
+        <div class="gauge-header">
+          <span class="gauge-label">Heat Generated</span>
+          <span class="gauge-value" id="val-heat-gen">0 W</span>
+        </div>
+        <div class="gauge-bar"><div class="gauge-fill heat" id="bar-heat-gen" style="width:0%"></div></div>
+      </div>
+      <div class="gauge">
+        <div class="gauge-header">
+          <span class="gauge-label">Heat Radiated</span>
+          <span class="gauge-value" id="val-heat-rad">0 W</span>
+        </div>
+        <div class="gauge-bar"><div class="gauge-fill power" id="bar-heat-rad" style="width:0%"></div></div>
+      </div>
+      <div class="gauge">
+        <div class="gauge-header">
+          <span class="gauge-label">Radiator Temp</span>
+          <span class="gauge-value" id="val-rad-temp">290 K</span>
+        </div>
+      </div>
+    </div>
+
+    <div class="panel-section">
+      <div class="panel-title">Performance</div>
+      <div class="gauge">
+        <div class="gauge-header">
+          <span class="gauge-label">Compute Output</span>
+          <span class="gauge-value" id="val-tflops">0 TFLOPS</span>
+        </div>
+        <div class="gauge-bar"><div class="gauge-fill compute" id="bar-tflops" style="width:0%"></div></div>
+      </div>
+      <div class="gauge">
+        <div class="gauge-header">
+          <span class="gauge-label">Chip Health</span>
+          <span class="gauge-value" id="val-chip-health">100%</span>
+        </div>
+        <div class="gauge-bar"><div class="gauge-fill battery" id="bar-chip-health" style="width:100%"></div></div>
+      </div>
+      <div class="gauge">
+        <div class="gauge-header">
+          <span class="gauge-label">Radiation Dose</span>
+          <span class="gauge-value" id="val-radiation">0 rad</span>
+        </div>
+        <div class="gauge-bar"><div class="gauge-fill heat" id="bar-radiation" style="width:0%"></div></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Bottom Panel -->
+  <div id="bottom-panel">
+    <div class="bottom-section">
+      <div class="bottom-section-title">Event Log</div>
+      <div id="event-log"></div>
+    </div>
+    <div class="bottom-section">
+      <div class="bottom-section-title">Active Jobs</div>
+      <div id="active-jobs"></div>
+    </div>
+    <div class="bottom-section">
+      <div class="bottom-section-title">Upgrades</div>
+      <div id="upgrades-list"></div>
+    </div>
+  </div>
+</div>
+
+<!-- Game Over Overlay -->
+<div id="game-over">
+  <h2 id="gameover-title">SATELLITE LOST</h2>
+  <p id="gameover-reason">Core temperature exceeded safe limits</p>
+  <p id="gameover-stats"></p>
+  <button class="btn" onclick="location.reload()">RELAUNCH SATELLITE</button>
+</div>
+
+<script>
+// ============================================================
+// PHYSICS CONSTANTS (Real-world accurate)
+// ============================================================
+const PHYSICS = {
+  // Stefan-Boltzmann constant (W/m²·K⁴)
+  STEFAN_BOLTZMANN: 5.670374419e-8,
+
+  // Solar irradiance at 1 AU (W/m²)
+  SOLAR_IRRADIANCE: 1361,
+
+  // Earth's radius (km)
+  EARTH_RADIUS: 6371,
+
+  // Gravitational parameter μ = GM (km³/s²)
+  GM: 398600.4418,
+
+  // Background space temperature (K) - cosmic microwave background
+  SPACE_TEMP: 2.7,
+
+  // Earth IR emission average (W/m²) seen by satellite
+  EARTH_IR: 240,
+
+  // Earth albedo factor
+  EARTH_ALBEDO: 0.3,
+};
+
+// ============================================================
+// SATELLITE CONFIGURATION (Starlink V3-class datacenter sat)
+// ============================================================
+const INITIAL_CONFIG = {
+  // Orbital parameters
+  altitude: 550,           // km above Earth's surface
+  inclination: 53,         // degrees (Starlink shell)
+
+  // Solar panels
+  solarPanelArea: 120,     // m² (large V3-class)
+  solarCellEfficiency: 0.32, // 32% multi-junction GaAs cells
+  solarDegradationRate: 0.02, // 2% per year from radiation
+
+  // Radiators
+  radiatorArea: 60,        // m² total radiator surface
+  radiatorEmissivity: 0.92, // high-emissivity coating
+  radiatorAbsorptivity: 0.15, // low solar absorptivity
+
+  // Compute modules (based on space-rated AI accelerators)
+  computeModules: 4,       // number of compute modules
+  powerPerModule: 2500,    // watts per module at 100% clock
+  tflopsPerModule: 250,    // TFLOPS FP16 per module
+  heatFractionCompute: 0.95, // 95% of compute power becomes heat
+
+  // System power (avionics, comms, attitude control, etc.)
+  systemPower: 800,        // watts baseline systems
+  laserLinkPower: 400,     // watts for laser inter-satellite link
+
+  // Battery
+  batteryCapacity: 15000,  // Wh (lithium-ion)
+  batteryMaxCharge: 5000,  // watts max charge rate
+  batteryMaxDischarge: 12000, // watts max discharge rate
+  batteryEfficiency: 0.92, // round-trip efficiency
+
+  // Thermal
+  thermalMass: 500000,     // J/K (thermal inertia of satellite structure)
+  minSafeTemp: 230,        // K - electronics minimum
+  maxSafeTemp: 370,        // K - electronics maximum
+  criticalTemp: 390,       // K - permanent damage threshold
+
+  // Satellite
+  mass: 1250,              // kg (Starlink V3-class)
+  designLife: 5,           // years
+};
+
+// ============================================================
+// GAME STATE
+// ============================================================
+let state = {
+  // Time
+  simTime: 0,              // seconds since launch
+  realTime: 0,
+  timeScale: 1,
+  paused: false,
+  day: 1,
+
+  // Orbital
+  orbitalAngle: 0,         // radians, position in orbit
+  orbitalPeriod: 0,        // seconds, computed
+  inEclipse: false,
+  eclipseFraction: 0,
+  sunAngle: 0,             // angle of sun relative to orbital plane
+
+  // Solar
+  solarGeneration: 0,      // watts currently generated
+  panelAngle: 90,          // degrees, angle to sun (90 = optimal)
+  autoTrack: true,
+  panelDegradation: 0,     // 0-1, accumulated degradation
+
+  // Compute
+  activeModules: 4,
+  maxModules: 4,
+  clockSpeed: 100,         // percentage (100 = nominal)
+  currentTFLOPS: 0,
+  chipHealth: 100,         // percentage
+  totalRadiation: 0,       // accumulated rad
+
+  // Thermal
+  coreTemp: 295,           // K (starting near room temp)
+  radiatorTemp: 290,       // K
+  heatGenerated: 0,        // watts
+  heatRadiated: 0,         // watts
+  radiatorDeployment: 100, // percentage deployed
+
+  // Power
+  batteryLevel: 15000,     // Wh remaining
+  batteryMode: 'auto',     // auto, charge, discharge
+  netPower: 0,
+  totalPowerDraw: 0,
+  uplinkActive: true,
+
+  // Economy
+  credits: 1000,
+  totalCreditsEarned: 0,
+  jobs: [],
+  completedJobs: 0,
+
+  // Config (mutable via upgrades)
+  config: { ...INITIAL_CONFIG },
+
+  // Events
+  solarFlareActive: false,
+  solarFlareIntensity: 0,
+  debrisWarning: false,
+
+  // Game
+  gameOver: false,
+  gameOverReason: '',
+  damagedModules: 0,
+};
+
+// ============================================================
+// ORBITAL MECHANICS
+// ============================================================
+function computeOrbitalPeriod(altitudeKm) {
+  const r = PHYSICS.EARTH_RADIUS + altitudeKm; // km
+  // T = 2π√(r³/μ)
+  return 2 * Math.PI * Math.sqrt(Math.pow(r, 3) / PHYSICS.GM);
+}
+
+function computeEclipseFraction(altitudeKm) {
+  const r = PHYSICS.EARTH_RADIUS + altitudeKm;
+  // Half-angle of Earth's shadow cone (simplified, cylindrical shadow)
+  const sinHalfAngle = PHYSICS.EARTH_RADIUS / r;
+  const halfAngle = Math.asin(sinHalfAngle);
+  // Fraction of orbit in shadow (for circular orbit with 0 beta angle)
+  // Varies with beta angle (angle between orbital plane and sun direction)
+  // For simplicity, use average beta angle effect
+  return halfAngle / Math.PI;
+}
+
+function isInEclipse(orbitalAngle, eclipseFraction) {
+  // Eclipse occurs around orbital angle π (behind Earth)
+  const eclipseHalfAngle = eclipseFraction * Math.PI;
+  const angleFromShadow = Math.abs(((orbitalAngle + Math.PI) % (2 * Math.PI)) - Math.PI);
+  return angleFromShadow < eclipseHalfAngle;
+}
+
+// ============================================================
+// THERMAL PHYSICS
+// ============================================================
+function computeRadiativeHeatLoss(radiatorArea, deployFraction, emissivity, temp, spaceTemp) {
+  // Stefan-Boltzmann law: P = εσA(T⁴ - T_space⁴)
+  // Both sides of radiator can radiate (factor of ~1.8 for two-sided panels, minus structural backing)
+  const effectiveArea = radiatorArea * deployFraction * 1.7;
+  const power = emissivity * PHYSICS.STEFAN_BOLTZMANN * effectiveArea *
+    (Math.pow(temp, 4) - Math.pow(spaceTemp, 4));
+  return Math.max(0, power);
+}
+
+function computeSolarHeatInput(solarPanelArea, inSunlight, panelAngleDeg) {
+  // Solar panels absorb ~70% of light not converted to electricity
+  // Absorption coefficient ~0.92, efficiency ~0.32, so ~0.92 * (1-0.32) = 0.63 absorbed as heat
+  if (!inSunlight) return 0;
+  const absorbedFraction = 0.92 * (1 - state.config.solarCellEfficiency);
+  const angleFactor = Math.cos((90 - panelAngleDeg) * Math.PI / 180);
+  return PHYSICS.SOLAR_IRRADIANCE * solarPanelArea * absorbedFraction * Math.max(0, angleFactor);
+}
+
+function computeEarthIRInput(altitudeKm) {
+  // Earth IR heating on satellite (view factor dependent)
+  const r = PHYSICS.EARTH_RADIUS + altitudeKm;
+  const viewFactor = Math.pow(PHYSICS.EARTH_RADIUS / r, 2);
+  // Approximate satellite cross-section exposed to Earth: ~20 m²
+  return PHYSICS.EARTH_IR * viewFactor * 20;
+}
+
+function computeAlbedoInput(altitudeKm, inSunlight) {
+  if (!inSunlight) return 0;
+  const r = PHYSICS.EARTH_RADIUS + altitudeKm;
+  const viewFactor = Math.pow(PHYSICS.EARTH_RADIUS / r, 2);
+  return PHYSICS.SOLAR_IRRADIANCE * PHYSICS.EARTH_ALBEDO * viewFactor * 15;
+}
+
+// ============================================================
+// POWER SYSTEMS
+// ============================================================
+function computeSolarPower(panelArea, efficiency, inSunlight, panelAngleDeg, degradation) {
+  if (!inSunlight) return 0;
+  const angleFactor = Math.cos((90 - panelAngleDeg) * Math.PI / 180);
+  return PHYSICS.SOLAR_IRRADIANCE * panelArea * efficiency * (1 - degradation) * Math.max(0, angleFactor);
+}
+
+function computeTotalPowerDraw() {
+  const clockFactor = state.clockSpeed / 100;
+  // Power scales super-linearly with clock (voltage scaling: P ∝ V²f ≈ f³ roughly)
+  const overclockFactor = clockFactor <= 1 ? clockFactor : Math.pow(clockFactor, 2.5);
+  const computePower = state.activeModules * state.config.powerPerModule * overclockFactor;
+  const systemPower = state.config.systemPower;
+  const laserPower = state.uplinkActive ? state.config.laserLinkPower : 0;
+  return { computePower, systemPower, laserPower, total: computePower + systemPower + laserPower };
+}
+
+// ============================================================
+// COMPUTE
+// ============================================================
+function computeTFLOPS() {
+  const clockFactor = state.clockSpeed / 100;
+  // Performance scales linearly with clock (until thermal throttle)
+  const thermalThrottle = state.coreTemp > 350 ? Math.max(0, 1 - (state.coreTemp - 350) / 40) : 1;
+  const healthFactor = state.chipHealth / 100;
+  return state.activeModules * state.config.tflopsPerModule * clockFactor * thermalThrottle * healthFactor;
+}
+
+// ============================================================
+// SIMULATION UPDATE
+// ============================================================
+function updateSimulation(dtReal) {
+  if (state.paused || state.gameOver) return;
+
+  const dt = dtReal * state.timeScale; // sim seconds
+  state.simTime += dt;
+
+  // Update day counter
+  state.day = Math.floor(state.simTime / 86400) + 1;
+
+  // --- Orbital Position ---
+  if (state.orbitalPeriod === 0) {
+    state.orbitalPeriod = computeOrbitalPeriod(state.config.altitude);
+    state.eclipseFraction = computeEclipseFraction(state.config.altitude);
+  }
+  state.orbitalAngle = (state.orbitalAngle + (2 * Math.PI * dt / state.orbitalPeriod)) % (2 * Math.PI);
+  state.inEclipse = isInEclipse(state.orbitalAngle, state.eclipseFraction);
+
+  // --- Solar Power ---
+  const effectivePanelAngle = state.autoTrack ? 90 : state.panelAngle;
+  state.solarGeneration = computeSolarPower(
+    state.config.solarPanelArea,
+    state.config.solarCellEfficiency,
+    !state.inEclipse,
+    effectivePanelAngle,
+    state.panelDegradation
+  );
+
+  // Panel degradation (radiation damage over time)
+  state.panelDegradation += state.config.solarDegradationRate * dt / (365.25 * 86400);
+  state.panelDegradation = Math.min(state.panelDegradation, 0.5); // max 50% degradation
+
+  // --- Power Draw ---
+  const powerDraw = computeTotalPowerDraw();
+  state.totalPowerDraw = powerDraw.total;
+
+  // --- Battery Management ---
+  const powerBalance = state.solarGeneration - powerDraw.total;
+
+  if (state.batteryMode === 'auto') {
+    if (powerBalance > 0) {
+      // Excess power → charge battery
+      const chargeRate = Math.min(powerBalance, state.config.batteryMaxCharge);
+      state.batteryLevel += (chargeRate * state.config.batteryEfficiency * dt) / 3600;
+    } else {
+      // Power deficit → discharge battery
+      const dischargeRate = Math.min(-powerBalance, state.config.batteryMaxDischarge);
+      state.batteryLevel -= (dischargeRate * dt) / (3600 * state.config.batteryEfficiency);
+    }
+  } else if (state.batteryMode === 'charge') {
+    const chargeRate = Math.min(Math.max(0, powerBalance), state.config.batteryMaxCharge);
+    state.batteryLevel += (chargeRate * state.config.batteryEfficiency * dt) / 3600;
+  } else if (state.batteryMode === 'discharge') {
+    const available = Math.min(state.config.batteryMaxDischarge, state.batteryLevel * 3600 / dt);
+    state.batteryLevel -= (Math.min(-powerBalance, available) * dt) / (3600 * state.config.batteryEfficiency);
+  }
+
+  state.batteryLevel = Math.max(0, Math.min(state.batteryLevel, state.config.batteryCapacity));
+  state.netPower = powerBalance;
+
+  // If battery is empty and power balance is negative → forced shutdown of modules
+  if (state.batteryLevel <= 0 && powerBalance < 0) {
+    if (state.activeModules > 0) {
+      state.activeModules = Math.max(0, state.activeModules - 1);
+      document.getElementById('ctrl-compute').value = state.activeModules;
+      addLog('warn', 'Power deficit! Shutting down compute module');
+    }
+    if (state.activeModules === 0 && state.batteryLevel <= 0) {
+      // Total power loss
+      triggerGameOver('Complete power failure - all systems offline');
+      return;
+    }
+  }
+
+  // --- Heat Generation ---
+  const clockFactor = state.clockSpeed / 100;
+  const overclockFactor = clockFactor <= 1 ? clockFactor : Math.pow(clockFactor, 2.5);
+  const computeHeat = state.activeModules * state.config.powerPerModule * overclockFactor * state.config.heatFractionCompute;
+  const systemHeat = state.config.systemPower * 0.8; // 80% of system power becomes heat
+  const solarAbsorbed = computeSolarHeatInput(state.config.solarPanelArea, !state.inEclipse, effectivePanelAngle);
+  const earthIR = computeEarthIRInput(state.config.altitude);
+  const albedoHeat = computeAlbedoInput(state.config.altitude, !state.inEclipse);
+
+  state.heatGenerated = computeHeat + systemHeat + solarAbsorbed + earthIR + albedoHeat;
+
+  // --- Heat Dissipation ---
+  const radiatorDeploy = state.radiatorDeployment / 100;
+  state.radiatorTemp = state.coreTemp - 10; // radiators slightly cooler than core
+  state.heatRadiated = computeRadiativeHeatLoss(
+    state.config.radiatorArea,
+    radiatorDeploy,
+    state.config.radiatorEmissivity,
+    state.radiatorTemp,
+    PHYSICS.SPACE_TEMP
+  );
+
+  // Also radiate from satellite body (smaller contribution)
+  const bodyRadiation = computeRadiativeHeatLoss(20, 1, 0.4, state.coreTemp, PHYSICS.SPACE_TEMP);
+  state.heatRadiated += bodyRadiation;
+
+  // Net heat and temperature change
+  // dT/dt = (Q_in - Q_out) / C_thermal
+  const netHeat = state.heatGenerated - state.heatRadiated;
+  const dTemp = (netHeat * dt) / state.config.thermalMass;
+  state.coreTemp += dTemp;
+
+  // Solar flare heating
+  if (state.solarFlareActive) {
+    state.coreTemp += state.solarFlareIntensity * 0.5 * dt;
+  }
+
+  // --- Radiation Effects ---
+  // Base radiation in LEO: ~0.5 rad/day at 550km (inside South Atlantic Anomaly it's higher)
+  let radiationRate = 0.5 / 86400; // rad/sec base
+  if (state.solarFlareActive) {
+    radiationRate *= (1 + state.solarFlareIntensity * 50); // flares massively increase radiation
+  }
+  state.totalRadiation += radiationRate * dt;
+
+  // Chip degradation from radiation and heat
+  const radiationDamageRate = state.totalRadiation > 1000 ? 0.001 : 0.0001; // faster above 1krad
+  const heatDamageRate = state.coreTemp > 360 ? (state.coreTemp - 360) * 0.01 : 0;
+  state.chipHealth -= (radiationDamageRate + heatDamageRate) * dt / 3600;
+  state.chipHealth = Math.max(0, Math.min(100, state.chipHealth));
+
+  // --- Compute Output ---
+  state.currentTFLOPS = computeTFLOPS();
+
+  // --- Process Jobs ---
+  processJobs(dt);
+
+  // --- Check failure conditions ---
+  if (state.coreTemp >= state.config.criticalTemp) {
+    triggerGameOver('Core temperature exceeded critical limit (' + Math.round(state.coreTemp) + 'K) - electronics destroyed');
+    return;
+  }
+  if (state.coreTemp <= state.config.minSafeTemp - 20) {
+    triggerGameOver('Core temperature dropped below survival limit (' + Math.round(state.coreTemp) + 'K) - batteries frozen');
+    return;
+  }
+  if (state.chipHealth <= 0) {
+    triggerGameOver('All compute chips failed from accumulated radiation damage');
+    return;
+  }
+
+  // --- Random Events ---
+  processEvents(dt);
+}
+
+// ============================================================
+// JOBS SYSTEM
+// ============================================================
+const JOB_TYPES = [
+  { name: 'LLM Inference Batch', tflopsReq: 200, duration: 3600, reward: 500, powerBonus: 0 },
+  { name: 'Satellite Imagery ML', tflopsReq: 150, duration: 7200, reward: 1200, powerBonus: 0 },
+  { name: 'Climate Model Run', tflopsReq: 400, duration: 14400, reward: 3000, powerBonus: 0 },
+  { name: 'Protein Folding Sim', tflopsReq: 300, duration: 10800, reward: 2200, powerBonus: 0 },
+  { name: 'Edge AI Cache Warm', tflopsReq: 100, duration: 1800, reward: 200, powerBonus: 0 },
+  { name: 'Neural Net Training', tflopsReq: 500, duration: 28800, reward: 6000, powerBonus: 0 },
+  { name: 'Crypto Verification', tflopsReq: 80, duration: 900, reward: 100, powerBonus: 0 },
+  { name: 'Scientific Simulation', tflopsReq: 350, duration: 18000, reward: 4000, powerBonus: 0 },
+];
+
+function spawnJob() {
+  if (state.jobs.length >= 5) return;
+  const type = JOB_TYPES[Math.floor(Math.random() * JOB_TYPES.length)];
+  const job = {
+    ...type,
+    id: Date.now() + Math.random(),
+    progress: 0,        // 0-1
+    tflopsAllocated: 0,
+    active: true,
+  };
+  state.jobs.push(job);
+  addLog('info', `New job: ${job.name} (${job.tflopsReq} TFLOPS, $${job.reward})`);
+}
+
+function processJobs(dt) {
+  // Distribute available TFLOPS across active jobs
+  let availableTFLOPS = state.currentTFLOPS;
+
+  for (const job of state.jobs) {
+    if (!job.active) continue;
+    const allocated = Math.min(availableTFLOPS, job.tflopsReq);
+    job.tflopsAllocated = allocated;
+    const progressRate = (allocated / job.tflopsReq) / job.duration;
+    job.progress += progressRate * dt;
+    availableTFLOPS -= allocated;
+
+    if (job.progress >= 1) {
+      job.progress = 1;
+      job.active = false;
+      state.credits += job.reward;
+      state.totalCreditsEarned += job.reward;
+      state.completedJobs++;
+      addLog('success', `Job complete: ${job.name} (+$${job.reward})`);
+    }
+  }
+
+  // Remove completed jobs after a delay
+  state.jobs = state.jobs.filter(j => j.active || j.progress < 1.1);
+}
+
+// ============================================================
+// EVENTS SYSTEM
+// ============================================================
+let lastJobSpawn = 0;
+let lastSolarFlareCheck = 0;
+let lastDebrisCheck = 0;
+
+function processEvents(dt) {
+  // Spawn jobs periodically
+  if (state.simTime - lastJobSpawn > 1800 + Math.random() * 3600) {
+    spawnJob();
+    lastJobSpawn = state.simTime;
+  }
+
+  // Solar flare events (random, ~once per 30 days average)
+  if (state.simTime - lastSolarFlareCheck > 600) {
+    lastSolarFlareCheck = state.simTime;
+    if (!state.solarFlareActive && Math.random() < 0.0003) {
+      state.solarFlareActive = true;
+      state.solarFlareIntensity = 0.2 + Math.random() * 0.8;
+      const severity = state.solarFlareIntensity > 0.6 ? 'SEVERE' : 'moderate';
+      addLog('error', `SOLAR FLARE DETECTED - ${severity} (intensity: ${(state.solarFlareIntensity * 100).toFixed(0)}%)`);
+      // Flare lasts 2-8 hours
+      setTimeout(() => {
+        state.solarFlareActive = false;
+        state.solarFlareIntensity = 0;
+        addLog('info', 'Solar flare subsided');
+      }, (2 + Math.random() * 6) * 3600 * 1000 / state.timeScale);
+    }
+  }
+
+  // Debris warnings
+  if (state.simTime - lastDebrisCheck > 3600) {
+    lastDebrisCheck = state.simTime;
+    if (!state.debrisWarning && Math.random() < 0.01) {
+      state.debrisWarning = true;
+      addLog('warn', 'DEBRIS WARNING - Consider retracting radiators');
+      setTimeout(() => {
+        if (state.radiatorDeployment > 50 && state.debrisWarning) {
+          // 10% chance of actual impact if radiators deployed
+          if (Math.random() < 0.1) {
+            state.config.radiatorArea *= 0.9;
+            addLog('error', 'DEBRIS IMPACT - Radiator damaged! Area reduced by 10%');
+          } else {
+            addLog('info', 'Debris passed without impact');
+          }
+        } else {
+          addLog('info', 'Debris passed - radiators safely retracted');
+        }
+        state.debrisWarning = false;
+      }, (300 + Math.random() * 600) * 1000 / Math.max(1, state.timeScale));
+    }
+  }
+
+  // Temperature warnings
+  if (state.coreTemp > 350 && state.coreTemp <= 370) {
+    if (Math.random() < 0.01) addLog('warn', `High temperature warning: ${Math.round(state.coreTemp)}K`);
+  }
+  if (state.coreTemp > 370) {
+    if (Math.random() < 0.05) addLog('error', `CRITICAL TEMPERATURE: ${Math.round(state.coreTemp)}K - Reduce compute load!`);
+  }
+}
+
+// ============================================================
+// UPGRADES
+// ============================================================
+const UPGRADES = [
+  { id: 'solar1', name: 'Solar Panel Expansion +40m²', cost: 5000, desc: '+40m² panel area',
+    apply: (c) => { c.solarPanelArea += 40; }, owned: false },
+  { id: 'solar2', name: 'High-Eff Solar Cells', cost: 8000, desc: '35% cell efficiency',
+    apply: (c) => { c.solarCellEfficiency = 0.35; }, owned: false },
+  { id: 'rad1', name: 'Radiator Extension +30m²', cost: 4000, desc: '+30m² radiator area',
+    apply: (c) => { c.radiatorArea += 30; }, owned: false },
+  { id: 'rad2', name: 'High-ε Radiator Coating', cost: 6000, desc: '0.95 emissivity coating',
+    apply: (c) => { c.radiatorEmissivity = 0.95; }, owned: false },
+  { id: 'bat1', name: 'Battery Expansion +10kWh', cost: 3000, desc: '+10,000 Wh capacity',
+    apply: (c) => { c.batteryCapacity += 10000; }, owned: false },
+  { id: 'comp1', name: 'Extra Compute Module', cost: 10000, desc: '+1 compute module (2.5kW)',
+    apply: (c) => { c.computeModules += 1; state.maxModules += 1;
+      document.getElementById('ctrl-compute').max = state.maxModules; }, owned: false },
+  { id: 'comp2', name: 'Rad-Hard Chips', cost: 12000, desc: 'Halves radiation chip damage',
+    apply: (c) => { c._radHard = true; }, owned: false },
+  { id: 'comp3', name: 'Efficient AI Accelerators', cost: 15000, desc: '300 TFLOPS/module, same power',
+    apply: (c) => { c.tflopsPerModule = 300; }, owned: false },
+  { id: 'cool1', name: 'Heat Pipe Upgrade', cost: 7000, desc: '+50% thermal mass',
+    apply: (c) => { c.thermalMass *= 1.5; }, owned: false },
+  { id: 'rad3', name: 'Massive Radiator Array +60m²', cost: 18000, desc: '+60m² radiator area',
+    apply: (c) => { c.radiatorArea += 60; }, owned: false },
+  { id: 'comp4', name: '2nd Extra Compute Module', cost: 20000, desc: '+1 more compute module',
+    apply: (c) => { c.computeModules += 1; state.maxModules += 1;
+      document.getElementById('ctrl-compute').max = state.maxModules; }, owned: false },
+  { id: 'solar3', name: 'Solar Array Mk.III +80m²', cost: 22000, desc: '+80m² panels',
+    apply: (c) => { c.solarPanelArea += 80; }, owned: false },
+];
+
+function purchaseUpgrade(id) {
+  const upgrade = UPGRADES.find(u => u.id === id);
+  if (!upgrade || upgrade.owned || state.credits < upgrade.cost) return;
+  state.credits -= upgrade.cost;
+  upgrade.owned = true;
+  upgrade.apply(state.config);
+  addLog('success', `Purchased: ${upgrade.name}`);
+  renderUpgrades();
+}
+
+// ============================================================
+// LOGGING
+// ============================================================
+const logEntries = [];
+function addLog(type, message) {
+  const t = formatTime(state.simTime);
+  logEntries.push({ type, message, time: t });
+  if (logEntries.length > 100) logEntries.shift();
+}
+
+function formatTime(seconds) {
+  const h = Math.floor(seconds / 3600) % 24;
+  const m = Math.floor((seconds % 3600) / 60);
+  const s = Math.floor(seconds % 60);
+  return `${String(h).padStart(2,'0')}:${String(m).padStart(2,'0')}:${String(s).padStart(2,'0')}`;
+}
+
+function formatWatts(w) {
+  if (w >= 1000) return (w / 1000).toFixed(1) + ' kW';
+  return Math.round(w) + ' W';
+}
+
+// ============================================================
+// GAME OVER
+// ============================================================
+function triggerGameOver(reason) {
+  state.gameOver = true;
+  state.gameOverReason = reason;
+  document.getElementById('gameover-title').textContent = 'SATELLITE LOST';
+  document.getElementById('gameover-reason').textContent = reason;
+  document.getElementById('gameover-stats').textContent =
+    `Survived ${state.day} days | Earned $${state.totalCreditsEarned.toLocaleString()} | Completed ${state.completedJobs} jobs`;
+  document.getElementById('game-over').classList.add('show');
+  addLog('error', 'MISSION FAILED: ' + reason);
+}
+
+// ============================================================
+// CANVAS RENDERING
+// ============================================================
+const canvas = document.getElementById('main-canvas');
+const ctx = canvas.getContext('2d');
+
+function resizeCanvas() {
+  const rect = canvas.parentElement.getBoundingClientRect();
+  canvas.width = rect.width * window.devicePixelRatio;
+  canvas.height = rect.height * window.devicePixelRatio;
+  canvas.style.width = rect.width + 'px';
+  canvas.style.height = rect.height + 'px';
+  ctx.scale(window.devicePixelRatio, window.devicePixelRatio);
+}
+
+function drawScene() {
+  const w = canvas.width / window.devicePixelRatio;
+  const h = canvas.height / window.devicePixelRatio;
+  ctx.clearRect(0, 0, w, h);
+
+  // Stars background
+  if (!drawScene._stars) {
+    drawScene._stars = [];
+    for (let i = 0; i < 200; i++) {
+      drawScene._stars.push({
+        x: Math.random() * 2000,
+        y: Math.random() * 1200,
+        r: Math.random() * 1.5 + 0.3,
+        b: Math.random() * 0.5 + 0.5,
+      });
+    }
+  }
+  for (const star of drawScene._stars) {
+    const flicker = star.b + Math.sin(state.simTime * 0.5 + star.x) * 0.15;
+    ctx.fillStyle = `rgba(255,255,255,${flicker})`;
+    ctx.beginPath();
+    ctx.arc(star.x % w, star.y % h, star.r, 0, Math.PI * 2);
+    ctx.fill();
+  }
+
+  const cx = w / 2;
+  const cy = h / 2;
+
+  // Earth (centered, showing orbit)
+  const earthRadius = Math.min(w, h) * 0.18;
+  const orbitRadius = earthRadius + Math.min(w, h) * 0.22;
+
+  // Earth glow
+  const earthGlow = ctx.createRadialGradient(cx, cy, earthRadius * 0.9, cx, cy, earthRadius * 1.4);
+  earthGlow.addColorStop(0, 'rgba(30,120,255,0.3)');
+  earthGlow.addColorStop(1, 'rgba(30,120,255,0)');
+  ctx.fillStyle = earthGlow;
+  ctx.beginPath();
+  ctx.arc(cx, cy, earthRadius * 1.4, 0, Math.PI * 2);
+  ctx.fill();
+
+  // Earth body
+  const earthGrad = ctx.createRadialGradient(cx - earthRadius * 0.3, cy - earthRadius * 0.3, 0, cx, cy, earthRadius);
+  earthGrad.addColorStop(0, '#4a8fe7');
+  earthGrad.addColorStop(0.5, '#2d6bc4');
+  earthGrad.addColorStop(0.8, '#1a4a8a');
+  earthGrad.addColorStop(1, '#0d2847');
+  ctx.fillStyle = earthGrad;
+  ctx.beginPath();
+  ctx.arc(cx, cy, earthRadius, 0, Math.PI * 2);
+  ctx.fill();
+
+  // Landmasses (simplified)
+  ctx.fillStyle = 'rgba(34, 139, 34, 0.3)';
+  const landOffset = (state.simTime * 0.001) % (Math.PI * 2);
+  for (let i = 0; i < 5; i++) {
+    const angle = landOffset + i * 1.2;
+    const lx = cx + Math.cos(angle) * earthRadius * 0.5;
+    const ly = cy + Math.sin(angle) * earthRadius * 0.6;
+    ctx.beginPath();
+    ctx.ellipse(lx, ly, earthRadius * 0.25, earthRadius * 0.15, angle, 0, Math.PI * 2);
+    ctx.fill();
+  }
+
+  // Atmosphere rim
+  ctx.strokeStyle = 'rgba(100,180,255,0.4)';
+  ctx.lineWidth = 2;
+  ctx.beginPath();
+  ctx.arc(cx, cy, earthRadius + 2, 0, Math.PI * 2);
+  ctx.stroke();
+
+  // Orbit path (dashed)
+  ctx.strokeStyle = 'rgba(79,195,247,0.15)';
+  ctx.lineWidth = 1;
+  ctx.setLineDash([4, 8]);
+  ctx.beginPath();
+  ctx.arc(cx, cy, orbitRadius, 0, Math.PI * 2);
+  ctx.stroke();
+  ctx.setLineDash([]);
+
+  // Eclipse zone (shadow)
+  const eclipseAngle = state.eclipseFraction * Math.PI;
+  ctx.fillStyle = 'rgba(0,0,0,0.3)';
+  ctx.beginPath();
+  ctx.arc(cx, cy, orbitRadius + 20, Math.PI - eclipseAngle, Math.PI + eclipseAngle);
+  ctx.arc(cx, cy, earthRadius + 5, Math.PI + eclipseAngle, Math.PI - eclipseAngle, true);
+  ctx.fill();
+
+  // Sun direction indicator
+  const sunX = cx + (orbitRadius + 60) * Math.cos(0);
+  const sunY = cy + (orbitRadius + 60) * Math.sin(0);
+  const sunGlow = ctx.createRadialGradient(sunX, sunY, 0, sunX, sunY, 30);
+  sunGlow.addColorStop(0, 'rgba(255,220,50,0.8)');
+  sunGlow.addColorStop(0.5, 'rgba(255,220,50,0.2)');
+  sunGlow.addColorStop(1, 'rgba(255,220,50,0)');
+  ctx.fillStyle = sunGlow;
+  ctx.beginPath();
+  ctx.arc(sunX, sunY, 30, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.fillStyle = '#ffd700';
+  ctx.font = '10px monospace';
+  ctx.fillText('SUN →', sunX - 50, sunY + 4);
+
+  // Satellite position
+  const satAngle = state.orbitalAngle;
+  const satX = cx + orbitRadius * Math.cos(satAngle);
+  const satY = cy + orbitRadius * Math.sin(satAngle);
+
+  // Solar flare effect
+  if (state.solarFlareActive) {
+    ctx.strokeStyle = `rgba(255, ${100 - state.solarFlareIntensity * 80}, 0, ${0.3 + Math.sin(state.simTime * 2) * 0.2})`;
+    ctx.lineWidth = 3;
+    for (let i = 0; i < 5; i++) {
+      ctx.beginPath();
+      const fAngle = Math.random() * Math.PI * 2;
+      const fDist = earthRadius + 10 + Math.random() * (orbitRadius - earthRadius);
+      ctx.arc(cx, cy, fDist, fAngle, fAngle + 0.3);
+      ctx.stroke();
+    }
+  }
+
+  // Draw satellite
+  drawSatellite(satX, satY, satAngle);
+
+  // Orbit info text
+  ctx.fillStyle = '#4fc3f7';
+  ctx.font = '11px monospace';
+  ctx.fillText(`Altitude: ${state.config.altitude} km`, 10, 20);
+  ctx.fillText(`Orbital Period: ${(state.orbitalPeriod / 60).toFixed(1)} min`, 10, 35);
+  ctx.fillText(`Eclipse: ${(state.eclipseFraction * 100).toFixed(1)}% of orbit`, 10, 50);
+  ctx.fillStyle = state.inEclipse ? '#f44336' : '#66bb6a';
+  ctx.fillText(state.inEclipse ? '● IN ECLIPSE' : '● IN SUNLIGHT', 10, 65);
+
+  if (state.solarFlareActive) {
+    ctx.fillStyle = '#f44336';
+    ctx.font = 'bold 14px monospace';
+    ctx.fillText('⚠ SOLAR FLARE ACTIVE', 10, 85);
+  }
+  if (state.debrisWarning) {
+    ctx.fillStyle = '#ff9800';
+    ctx.font = 'bold 14px monospace';
+    ctx.fillText('⚠ DEBRIS WARNING', 10, state.solarFlareActive ? 105 : 85);
+  }
+
+  // Physics formula display (educational)
+  ctx.fillStyle = 'rgba(255,255,255,0.4)';
+  ctx.font = '10px monospace';
+  const formulaY = h - 60;
+  ctx.fillText('Stefan-Boltzmann: P = εσA(T⁴ - T∞⁴)', w - 260, formulaY);
+  ctx.fillText(`σ = 5.67×10⁻⁸ W/m²K⁴`, w - 260, formulaY + 14);
+  ctx.fillText(`ε = ${state.config.radiatorEmissivity}  A = ${state.config.radiatorArea.toFixed(0)}m²`, w - 260, formulaY + 28);
+  ctx.fillText(`T = ${state.coreTemp.toFixed(0)}K → ${formatWatts(state.heatRadiated)} radiated`, w - 260, formulaY + 42);
+}
+
+function drawSatellite(x, y, angle) {
+  ctx.save();
+  ctx.translate(x, y);
+
+  // Satellite body
+  const bodyW = 20, bodyH = 14;
+  ctx.fillStyle = state.coreTemp > 350 ? '#ff6b35' : state.coreTemp > 330 ? '#ffa726' : '#78909c';
+  ctx.strokeStyle = '#b0bec5';
+  ctx.lineWidth = 1;
+  ctx.fillRect(-bodyW/2, -bodyH/2, bodyW, bodyH);
+  ctx.strokeRect(-bodyW/2, -bodyH/2, bodyW, bodyH);
+
+  // Solar panels
+  const panelW = 35, panelH = 10;
+  const panelColor = state.inEclipse ? '#1a237e' : '#1565c0';
+  ctx.fillStyle = panelColor;
+  ctx.strokeStyle = '#42a5f5';
+  ctx.lineWidth = 0.5;
+
+  // Left panel
+  ctx.fillRect(-bodyW/2 - panelW - 3, -panelH/2, panelW, panelH);
+  ctx.strokeRect(-bodyW/2 - panelW - 3, -panelH/2, panelW, panelH);
+  // Panel grid lines
+  ctx.strokeStyle = 'rgba(66,165,245,0.3)';
+  for (let i = 1; i < 5; i++) {
+    ctx.beginPath();
+    ctx.moveTo(-bodyW/2 - panelW - 3 + i * panelW/5, -panelH/2);
+    ctx.lineTo(-bodyW/2 - panelW - 3 + i * panelW/5, panelH/2);
+    ctx.stroke();
+  }
+
+  // Right panel
+  ctx.fillStyle = panelColor;
+  ctx.strokeStyle = '#42a5f5';
+  ctx.lineWidth = 0.5;
+  ctx.fillRect(bodyW/2 + 3, -panelH/2, panelW, panelH);
+  ctx.strokeRect(bodyW/2 + 3, -panelH/2, panelW, panelH);
+  for (let i = 1; i < 5; i++) {
+    ctx.beginPath();
+    ctx.moveTo(bodyW/2 + 3 + i * panelW/5, -panelH/2);
+    ctx.lineTo(bodyW/2 + 3 + i * panelW/5, panelH/2);
+    ctx.stroke();
+  }
+
+  // Radiator panels (top and bottom, when deployed)
+  if (state.radiatorDeployment > 20) {
+    const radH = 8 * (state.radiatorDeployment / 100);
+    ctx.fillStyle = 'rgba(200,200,200,0.6)';
+    ctx.fillRect(-bodyW/2, -bodyH/2 - radH - 2, bodyW, radH);
+    ctx.fillRect(-bodyW/2, bodyH/2 + 2, bodyW, radH);
+
+    // Heat glow on radiators
+    if (state.coreTemp > 310) {
+      const heatAlpha = Math.min(0.6, (state.coreTemp - 310) / 100);
+      ctx.fillStyle = `rgba(255, ${Math.max(0, 150 - (state.coreTemp - 310) * 2)}, 0, ${heatAlpha})`;
+      ctx.fillRect(-bodyW/2, -bodyH/2 - radH - 2, bodyW, radH);
+      ctx.fillRect(-bodyW/2, bodyH/2 + 2, bodyW, radH);
+    }
+  }
+
+  // Laser link beam (if active and not in eclipse)
+  if (state.uplinkActive) {
+    ctx.strokeStyle = 'rgba(0, 255, 100, 0.3)';
+    ctx.lineWidth = 1;
+    ctx.setLineDash([2, 4]);
+    ctx.beginPath();
+    ctx.moveTo(0, bodyH/2 + 15);
+    ctx.lineTo(-30, bodyH/2 + 50);
+    ctx.stroke();
+    ctx.setLineDash([]);
+  }
+
+  // Satellite label
+  ctx.fillStyle = '#4fc3f7';
+  ctx.font = '9px monospace';
+  ctx.textAlign = 'center';
+  ctx.fillText('SAT-DC1', 0, -bodyH/2 - (state.radiatorDeployment > 20 ? 15 : 5));
+
+  ctx.restore();
+}
+
+// ============================================================
+// UI UPDATE
+// ============================================================
+function updateUI() {
+  // Header
+  document.getElementById('hud-orbit').textContent = state.config.altitude + ' km';
+  document.getElementById('hud-time').textContent = formatTime(state.simTime);
+  document.getElementById('hud-credits').textContent = '$' + state.credits.toLocaleString();
+  document.getElementById('hud-day').textContent = state.day;
+
+  // Controls
+  document.getElementById('val-compute-modules').textContent = `${state.activeModules} / ${state.maxModules}`;
+  document.getElementById('val-clock').textContent = state.clockSpeed + '%';
+  document.getElementById('val-panel-angle').textContent = state.autoTrack ? 'AUTO' : state.panelAngle + '°';
+  document.getElementById('val-radiators').textContent = state.radiatorDeployment + '%';
+
+  // Temperature display
+  const tempEl = document.getElementById('temp-display');
+  tempEl.textContent = Math.round(state.coreTemp) + ' K';
+  tempEl.className = 'temp-display ' + (
+    state.coreTemp > 360 ? 'temp-danger' :
+    state.coreTemp > 340 || state.coreTemp < 250 ? 'temp-warn' : 'temp-ok'
+  );
+
+  // Power gauges
+  const maxPower = state.config.solarPanelArea * PHYSICS.SOLAR_IRRADIANCE * state.config.solarCellEfficiency;
+  document.getElementById('val-solar-gen').textContent = formatWatts(state.solarGeneration);
+  document.getElementById('bar-solar').style.width = (state.solarGeneration / maxPower * 100) + '%';
+
+  const powerDraw = computeTotalPowerDraw();
+  document.getElementById('val-compute-draw').textContent = formatWatts(powerDraw.computePower);
+  document.getElementById('bar-compute').style.width = (powerDraw.computePower / maxPower * 100) + '%';
+  document.getElementById('val-system-draw').textContent = formatWatts(powerDraw.systemPower + powerDraw.laserPower);
+  document.getElementById('bar-system').style.width = ((powerDraw.systemPower + powerDraw.laserPower) / maxPower * 100) + '%';
+
+  const netPowerEl = document.getElementById('val-net-power');
+  netPowerEl.textContent = (state.netPower >= 0 ? '+' : '') + formatWatts(state.netPower);
+  netPowerEl.style.color = state.netPower >= 0 ? '#66bb6a' : '#f44336';
+
+  // Battery
+  const battPct = (state.batteryLevel / state.config.batteryCapacity * 100);
+  document.getElementById('val-battery').textContent = battPct.toFixed(1) + '% (' + formatWatts(state.batteryLevel) + 'h)';
+  const battBar = document.getElementById('bar-battery');
+  battBar.style.width = battPct + '%';
+  battBar.className = 'gauge-fill ' + (battPct > 30 ? 'battery' : battPct > 10 ? 'warning' : 'danger');
+
+  // Thermal
+  document.getElementById('val-heat-gen').textContent = formatWatts(state.heatGenerated);
+  document.getElementById('bar-heat-gen').style.width = Math.min(100, state.heatGenerated / 20000 * 100) + '%';
+  document.getElementById('val-heat-rad').textContent = formatWatts(state.heatRadiated);
+  document.getElementById('bar-heat-rad').style.width = Math.min(100, state.heatRadiated / 20000 * 100) + '%';
+  document.getElementById('val-rad-temp').textContent = Math.round(state.radiatorTemp) + ' K';
+
+  // Performance
+  document.getElementById('val-tflops').textContent = state.currentTFLOPS.toFixed(0) + ' TFLOPS';
+  document.getElementById('bar-tflops').style.width = (state.currentTFLOPS / (state.maxModules * state.config.tflopsPerModule * 1.5) * 100) + '%';
+  document.getElementById('val-chip-health').textContent = state.chipHealth.toFixed(1) + '%';
+  const chipBar = document.getElementById('bar-chip-health');
+  chipBar.style.width = state.chipHealth + '%';
+  chipBar.className = 'gauge-fill ' + (state.chipHealth > 50 ? 'battery' : state.chipHealth > 25 ? 'warning' : 'danger');
+  document.getElementById('val-radiation').textContent = state.totalRadiation.toFixed(1) + ' rad';
+  document.getElementById('bar-radiation').style.width = Math.min(100, state.totalRadiation / 5000 * 100) + '%';
+
+  // Bandwidth
+  document.getElementById('val-bandwidth').textContent = state.uplinkActive ? '1.0 Tbps' : 'OFF';
+  document.getElementById('val-uplink').textContent = state.uplinkActive ? 'ON' : 'OFF';
+
+  // Event log
+  const logEl = document.getElementById('event-log');
+  logEl.innerHTML = logEntries.slice(-20).reverse().map(e =>
+    `<div class="log-entry"><span class="log-time">[${e.time}]</span> <span class="log-${e.type}">${e.message}</span></div>`
+  ).join('');
+
+  // Active jobs
+  const jobsEl = document.getElementById('active-jobs');
+  jobsEl.innerHTML = state.jobs.filter(j => j.active).map(j => `
+    <div class="job-card">
+      <div style="flex:1">
+        <div class="job-name">${j.name}</div>
+        <div style="font-size:10px;color:#888">${j.tflopsReq} TFLOPS | <span class="job-reward">$${j.reward}</span></div>
+        <div class="job-progress"><div class="job-progress-fill" style="width:${j.progress*100}%"></div></div>
+      </div>
+    </div>
+  `).join('') || '<div style="color:#555;font-size:11px">No active jobs</div>';
+}
+
+function renderUpgrades() {
+  const el = document.getElementById('upgrades-list');
+  el.innerHTML = UPGRADES.map(u => {
+    const classes = u.owned ? 'upgrade-item owned' : (state.credits >= u.cost ? 'upgrade-item affordable' : 'upgrade-item');
+    return `<div class="${classes}" onclick="purchaseUpgrade('${u.id}')">
+      <div><span class="upgrade-name">${u.name}</span><span class="upgrade-cost">${u.owned ? 'OWNED' : '$'+u.cost.toLocaleString()}</span></div>
+      <div class="upgrade-desc">${u.desc}</div>
+    </div>`;
+  }).join('');
+}
+
+// ============================================================
+// INPUT HANDLERS
+// ============================================================
+function setupControls() {
+  // Compute modules slider
+  document.getElementById('ctrl-compute').addEventListener('input', (e) => {
+    state.activeModules = parseInt(e.target.value);
+  });
+
+  // Clock speed slider
+  document.getElementById('ctrl-clock').addEventListener('input', (e) => {
+    state.clockSpeed = parseInt(e.target.value);
+  });
+
+  // Panel angle
+  document.getElementById('ctrl-panel-angle').addEventListener('input', (e) => {
+    state.panelAngle = parseInt(e.target.value);
+    if (state.autoTrack) {
+      state.autoTrack = false;
+      document.getElementById('btn-auto-track').classList.remove('active');
+    }
+  });
+
+  // Auto-track button
+  document.getElementById('btn-auto-track').addEventListener('click', () => {
+    state.autoTrack = !state.autoTrack;
+    document.getElementById('btn-auto-track').classList.toggle('active', state.autoTrack);
+  });
+
+  // Radiator slider
+  document.getElementById('ctrl-radiators').addEventListener('input', (e) => {
+    state.radiatorDeployment = parseInt(e.target.value);
+  });
+
+  // Battery mode
+  document.getElementById('btn-battery-auto').addEventListener('click', () => {
+    state.batteryMode = 'auto';
+    document.getElementById('val-battery-mode').textContent = 'AUTO';
+    document.querySelectorAll('#left-panel .panel-section:nth-child(4) .btn').forEach(b => b.classList.remove('active'));
+    document.getElementById('btn-battery-auto').classList.add('active');
+  });
+  document.getElementById('btn-battery-charge').addEventListener('click', () => {
+    state.batteryMode = 'charge';
+    document.getElementById('val-battery-mode').textContent = 'CHARGE';
+    document.querySelectorAll('#left-panel .panel-section:nth-child(4) .btn').forEach(b => b.classList.remove('active'));
+    document.getElementById('btn-battery-charge').classList.add('active');
+  });
+  document.getElementById('btn-battery-discharge').addEventListener('click', () => {
+    state.batteryMode = 'discharge';
+    document.getElementById('val-battery-mode').textContent = 'DISCHARGE';
+    document.querySelectorAll('#left-panel .panel-section:nth-child(4) .btn').forEach(b => b.classList.remove('active'));
+    document.getElementById('btn-battery-discharge').classList.add('active');
+  });
+
+  // Uplink toggle
+  document.getElementById('btn-uplink').addEventListener('click', () => {
+    state.uplinkActive = !state.uplinkActive;
+    document.getElementById('btn-uplink').classList.toggle('active', state.uplinkActive);
+  });
+
+  // Speed controls
+  document.querySelectorAll('.speed-btn').forEach(btn => {
+    btn.addEventListener('click', () => {
+      document.querySelectorAll('.speed-btn').forEach(b => b.classList.remove('active'));
+      btn.classList.add('active');
+      const speed = parseInt(btn.dataset.speed);
+      if (speed === 0) {
+        state.paused = true;
+      } else {
+        state.paused = false;
+        state.timeScale = speed;
+      }
+    });
+  });
+}
+
+// ============================================================
+// GAME LOOP
+// ============================================================
+let lastFrameTime = 0;
+
+function gameLoop(timestamp) {
+  if (lastFrameTime === 0) lastFrameTime = timestamp;
+  const dtReal = Math.min((timestamp - lastFrameTime) / 1000, 0.1); // cap at 100ms
+  lastFrameTime = timestamp;
+
+  updateSimulation(dtReal);
+  drawScene();
+  updateUI();
+  renderUpgrades();
+
+  requestAnimationFrame(gameLoop);
+}
+
+// ============================================================
+// INIT
+// ============================================================
+function init() {
+  resizeCanvas();
+  window.addEventListener('resize', resizeCanvas);
+  setupControls();
+
+  // Compute orbital period
+  state.orbitalPeriod = computeOrbitalPeriod(state.config.altitude);
+  state.eclipseFraction = computeEclipseFraction(state.config.altitude);
+
+  addLog('info', 'Satellite SAT-DC1 deployed to ' + state.config.altitude + 'km orbit');
+  addLog('info', `Orbital period: ${(state.orbitalPeriod / 60).toFixed(1)} min`);
+  addLog('info', `Eclipse fraction: ${(state.eclipseFraction * 100).toFixed(1)}%`);
+  addLog('info', `Solar panels: ${state.config.solarPanelArea}m² @ ${(state.config.solarCellEfficiency*100)}% efficiency`);
+  addLog('info', `Radiators: ${state.config.radiatorArea}m² @ ε=${state.config.radiatorEmissivity}`);
+  addLog('info', `Compute: ${state.config.computeModules} modules × ${state.config.tflopsPerModule} TFLOPS`);
+  addLog('info', 'Systems nominal. Accepting compute jobs.');
+
+  // Initial job
+  setTimeout(() => spawnJob(), 2000);
+
+  requestAnimationFrame(gameLoop);
+}
+
+init();
+</script>
+</body>
+</html>
