@@ -562,10 +562,22 @@ input[type="range"]::-webkit-slider-thumb {
       </div>
       <div class="gauge">
         <div class="gauge-header">
-          <span class="gauge-label">Radiation Dose</span>
+          <span class="gauge-label">Radiation Dose (TID)</span>
           <span class="gauge-value" id="val-radiation">0 rad</span>
         </div>
         <div class="gauge-bar"><div class="gauge-fill heat" id="bar-radiation" style="width:0%"></div></div>
+      </div>
+      <div class="gauge">
+        <div class="gauge-header">
+          <span class="gauge-label">SEU Bit-Flips</span>
+          <span class="gauge-value" id="val-seu">0</span>
+        </div>
+      </div>
+      <div class="gauge">
+        <div class="gauge-header">
+          <span class="gauge-label">SEU Rate</span>
+          <span class="gauge-value" id="val-seu-rate">0 /s</span>
+        </div>
       </div>
     </div>
   </div>
@@ -727,6 +739,12 @@ let state = {
   solarFlareIntensity: 0,
   debrisWarning: false,
 
+  // SEU (Single Event Upsets) - radiation bit flips
+  seuCount: 0,              // total bit flips
+  seuRate: 0,               // current rate per second
+  inSAA: false,             // South Atlantic Anomaly passage
+  saaAngle: 0,              // tracking SAA position in orbit
+
   // Game
   gameOver: false,
   gameOverReason: '',
@@ -765,11 +783,21 @@ function isInEclipse(orbitalAngle, eclipseFraction) {
 // ============================================================
 function computeRadiativeHeatLoss(radiatorArea, deployFraction, emissivity, temp, spaceTemp) {
   // Stefan-Boltzmann law: P = εσA(T⁴ - T_space⁴)
-  // Both sides of radiator can radiate (factor of ~1.8 for two-sided panels, minus structural backing)
+  // Deployable radiators radiate from both sides (~1.7x factor accounting for structural backing)
   const effectiveArea = radiatorArea * deployFraction * 1.7;
-  const power = emissivity * PHYSICS.STEFAN_BOLTZMANN * effectiveArea *
+  const radiated = emissivity * PHYSICS.STEFAN_BOLTZMANN * effectiveArea *
     (Math.pow(temp, 4) - Math.pow(spaceTemp, 4));
-  return Math.max(0, power);
+
+  // CRITICAL: Solar loading on radiators - sun hitting radiators ADDS heat
+  // Radiator absorptivity (silver teflon/white paint) α ≈ 0.10-0.15
+  // Sunlit radiators absorb α × 1361 W/m² ≈ 136-204 W/m² — eats into cooling capacity
+  // ISS real-world: 70 kW rejected with 422 m² = only 166 W/m² effective (vs ~400+ theoretical)
+  // We model ~40% of radiator area as sun-exposed on average when in sunlight
+  const sunFraction = state.inEclipse ? 0 : 0.4;
+  const solarLoading = state.config.radiatorAbsorptivity * PHYSICS.SOLAR_IRRADIANCE *
+    radiatorArea * deployFraction * sunFraction;
+
+  return Math.max(0, radiated - solarLoading);
 }
 
 function computeSolarHeatInput(solarPanelArea, inSunlight, panelAngleDeg) {
@@ -940,16 +968,53 @@ function updateSimulation(dtReal) {
   }
 
   // --- Radiation Effects ---
-  // Base radiation in LEO: ~0.5 rad/day at 550km (inside South Atlantic Anomaly it's higher)
+  // Base radiation in LEO: ~0.5 rad/day at 550km with 3mm Al shielding
+  // ~90% of SEUs in LEO occur in the South Atlantic Anomaly (SAA)
   let radiationRate = 0.5 / 86400; // rad/sec base
+
+  // South Atlantic Anomaly: ~15% of each orbit passes through SAA at 53° inclination
+  // SAA causes ~10x higher radiation rate during passage
+  state.saaAngle = (state.saaAngle + dt * 0.001) % (2 * Math.PI);
+  const saaWindow = Math.sin(state.orbitalAngle * 2.3 + state.saaAngle) > 0.85;
+  state.inSAA = saaWindow;
+  if (state.inSAA) {
+    radiationRate *= 10;
+  }
+
   if (state.solarFlareActive) {
-    radiationRate *= (1 + state.solarFlareIntensity * 50); // flares massively increase radiation
+    radiationRate *= (1 + state.solarFlareIntensity * 50);
   }
   state.totalRadiation += radiationRate * dt;
 
-  // Chip degradation from radiation and heat
-  const radiationDamageRate = state.totalRadiation > 1000 ? 0.001 : 0.0001; // faster above 1krad
-  const heatDamageRate = state.coreTemp > 360 ? (state.coreTemp - 360) * 0.01 : 0;
+  // Single Event Upsets (SEUs) - bit flips from radiation
+  // Unhardened 80GB HBM: ~10^-7 errors/bit/day = ~64,000 errors/day
+  // With ECC: most corrected, but some cause compute errors
+  const memoryBits = state.activeModules * 80e9 * 8; // 80GB HBM per module
+  const seuBaseRate = 1e-7 / 86400; // errors per bit per second
+  let seuMultiplier = 1;
+  if (state.inSAA) seuMultiplier *= 10;
+  if (state.solarFlareActive) seuMultiplier *= (1 + state.solarFlareIntensity * 20);
+  if (state.config._radHard) seuMultiplier *= 0.01; // rad-hard chips: 100x fewer SEUs
+  state.seuRate = memoryBits * seuBaseRate * seuMultiplier;
+  state.seuCount += state.seuRate * dt;
+
+  // SEU impact: uncorrectable errors occasionally corrupt compute jobs (~1 in 1000 SEUs)
+  if (state.seuRate > 100 && Math.random() < 0.0001 * dt * state.timeScale) {
+    const activeJobs = state.jobs.filter(j => j.active);
+    if (activeJobs.length > 0) {
+      const job = activeJobs[Math.floor(Math.random() * activeJobs.length)];
+      const rollback = 0.02 + Math.random() * 0.08; // lose 2-10% progress
+      job.progress = Math.max(0, job.progress - rollback);
+      addLog('warn', `SEU bit-flip corrupted ${job.name} - lost ${(rollback*100).toFixed(0)}% progress`);
+    }
+  }
+
+  // Chip degradation from radiation (TID) and heat
+  // Commercial CMOS fails at 5-20 krad TID; rad-hard survives 200+ krad
+  const tidThreshold = state.config._radHard ? 200000 : 10000; // rad
+  const radiationDamageRate = state.totalRadiation > tidThreshold * 0.5 ?
+    (state.totalRadiation / tidThreshold) * 0.001 : 0.0001;
+  const heatDamageRate = state.coreTemp > 358 ? (state.coreTemp - 358) * 0.015 : 0; // 358K = 85°C GPU throttle
   state.chipHealth -= (radiationDamageRate + heatDamageRate) * dt / 3600;
   state.chipHealth = Math.max(0, Math.min(100, state.chipHealth));
 
@@ -1051,15 +1116,17 @@ function processEvents(dt) {
     if (!state.solarFlareActive && Math.random() < 0.0003) {
       state.solarFlareActive = true;
       state.solarFlareIntensity = 0.2 + Math.random() * 0.8;
+      state._flareEndTime = state.simTime + (2 + Math.random() * 6) * 3600; // 2-8 hours in sim time
       const severity = state.solarFlareIntensity > 0.6 ? 'SEVERE' : 'moderate';
       addLog('error', `SOLAR FLARE DETECTED - ${severity} (intensity: ${(state.solarFlareIntensity * 100).toFixed(0)}%)`);
-      // Flare lasts 2-8 hours
-      setTimeout(() => {
-        state.solarFlareActive = false;
-        state.solarFlareIntensity = 0;
-        addLog('info', 'Solar flare subsided');
-      }, (2 + Math.random() * 6) * 3600 * 1000 / state.timeScale);
     }
+  }
+  // End solar flare based on sim time (works correctly with time acceleration)
+  if (state.solarFlareActive && state._flareEndTime && state.simTime >= state._flareEndTime) {
+    state.solarFlareActive = false;
+    state.solarFlareIntensity = 0;
+    state._flareEndTime = 0;
+    addLog('info', 'Solar flare subsided');
   }
 
   // Debris warnings
@@ -1067,22 +1134,24 @@ function processEvents(dt) {
     lastDebrisCheck = state.simTime;
     if (!state.debrisWarning && Math.random() < 0.01) {
       state.debrisWarning = true;
+      state._debrisEndTime = state.simTime + 300 + Math.random() * 600; // 5-15 min in sim time
       addLog('warn', 'DEBRIS WARNING - Consider retracting radiators');
-      setTimeout(() => {
-        if (state.radiatorDeployment > 50 && state.debrisWarning) {
-          // 10% chance of actual impact if radiators deployed
-          if (Math.random() < 0.1) {
-            state.config.radiatorArea *= 0.9;
-            addLog('error', 'DEBRIS IMPACT - Radiator damaged! Area reduced by 10%');
-          } else {
-            addLog('info', 'Debris passed without impact');
-          }
-        } else {
-          addLog('info', 'Debris passed - radiators safely retracted');
-        }
-        state.debrisWarning = false;
-      }, (300 + Math.random() * 600) * 1000 / Math.max(1, state.timeScale));
     }
+  }
+  // Resolve debris based on sim time
+  if (state.debrisWarning && state._debrisEndTime && state.simTime >= state._debrisEndTime) {
+    if (state.radiatorDeployment > 50) {
+      if (Math.random() < 0.1) {
+        state.config.radiatorArea *= 0.9;
+        addLog('error', 'DEBRIS IMPACT - Radiator damaged! Area reduced by 10%');
+      } else {
+        addLog('info', 'Debris passed without impact');
+      }
+    } else {
+      addLog('info', 'Debris passed - radiators safely retracted');
+    }
+    state.debrisWarning = false;
+    state._debrisEndTime = 0;
   }
 
   // Temperature warnings
@@ -1320,15 +1389,24 @@ function drawScene() {
   ctx.fillStyle = state.inEclipse ? '#f44336' : '#66bb6a';
   ctx.fillText(state.inEclipse ? '● IN ECLIPSE' : '● IN SUNLIGHT', 10, 65);
 
+  let alertY = 85;
+  if (state.inSAA) {
+    ctx.fillStyle = '#ff9800';
+    ctx.font = 'bold 12px monospace';
+    ctx.fillText('● SOUTH ATLANTIC ANOMALY - HIGH RADIATION', 10, alertY);
+    alertY += 18;
+  }
   if (state.solarFlareActive) {
     ctx.fillStyle = '#f44336';
     ctx.font = 'bold 14px monospace';
-    ctx.fillText('⚠ SOLAR FLARE ACTIVE', 10, 85);
+    ctx.fillText('⚠ SOLAR FLARE ACTIVE', 10, alertY);
+    alertY += 18;
   }
   if (state.debrisWarning) {
     ctx.fillStyle = '#ff9800';
     ctx.font = 'bold 14px monospace';
-    ctx.fillText('⚠ DEBRIS WARNING', 10, state.solarFlareActive ? 105 : 85);
+    ctx.fillText('⚠ DEBRIS WARNING', 10, alertY);
+    alertY += 18;
   }
 
   // Physics formula display (educational)
@@ -1483,7 +1561,10 @@ function updateUI() {
   chipBar.style.width = state.chipHealth + '%';
   chipBar.className = 'gauge-fill ' + (state.chipHealth > 50 ? 'battery' : state.chipHealth > 25 ? 'warning' : 'danger');
   document.getElementById('val-radiation').textContent = state.totalRadiation.toFixed(1) + ' rad';
-  document.getElementById('bar-radiation').style.width = Math.min(100, state.totalRadiation / 5000 * 100) + '%';
+  const tidLimit = state.config._radHard ? 200000 : 10000;
+  document.getElementById('bar-radiation').style.width = Math.min(100, state.totalRadiation / tidLimit * 100) + '%';
+  document.getElementById('val-seu').textContent = Math.floor(state.seuCount).toLocaleString();
+  document.getElementById('val-seu-rate').textContent = state.seuRate.toFixed(0) + ' /s';
 
   // Bandwidth
   document.getElementById('val-bandwidth').textContent = state.uplinkActive ? '1.0 Tbps' : 'OFF';
