@@ -909,12 +909,17 @@ function computeRadiativeHeatLoss(radiatorArea, deployFraction, emissivity, temp
 }
 
 function computeSolarHeatInput(solarPanelArea, inSunlight, panelAngleDeg) {
-  // Solar panels absorb ~70% of light not converted to electricity
-  // Absorption coefficient ~0.92, efficiency ~0.32, so ~0.92 * (1-0.32) = 0.63 absorbed as heat
+  // Solar panels absorb ~63% of sunlight as waste heat (α=0.92, η=0.32)
+  // BUT panels are thermally isolated from the spacecraft body — they radiate
+  // most waste heat from their own large surface area directly to space.
+  // Only ~8% of panel waste heat conducts through mounting points into the body.
+  // This makes compute heat the dominant thermal management challenge (as in reality).
   if (!inSunlight) return 0;
   const absorbedFraction = 0.92 * (1 - state.config.solarCellEfficiency);
   const angleFactor = Math.cos((90 - panelAngleDeg) * Math.PI / 180);
-  return PHYSICS.SOLAR_IRRADIANCE * solarPanelArea * absorbedFraction * Math.max(0, angleFactor);
+  const totalPanelHeat = PHYSICS.SOLAR_IRRADIANCE * solarPanelArea * absorbedFraction * Math.max(0, angleFactor);
+  const conductionFraction = 0.08; // ~8% conducts to body, rest radiates from panel surface
+  return totalPanelHeat * conductionFraction;
 }
 
 function computeEarthIRInput(altitudeKm) {
