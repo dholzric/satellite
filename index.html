@@ -287,6 +287,57 @@ input[type="range"]::-webkit-slider-thumb {
 .upgrade-name { color: #ddd; }
 .upgrade-cost { color: #ffd700; float: right; }
 .upgrade-desc { color: #777; font-size: 10px; margin-top: 2px; }
+.upgrade-requires { color: #666; font-size: 9px; margin-top: 1px; font-style: italic; }
+
+.branch-military { border-left: 3px solid #ff4444; }
+.branch-corporate { border-left: 3px solid #4488ff; }
+.branch-green { border-left: 3px solid #44ff44; }
+.branch-shared { border-left: 3px solid #888; }
+.tier-label { font-size: 9px; color: #555; margin-right: 4px; }
+.locked { opacity: 0.3; pointer-events: none; }
+.branch-header { font-size: 10px; text-transform: uppercase; letter-spacing: 1.5px; margin: 8px 0 4px 0; padding: 3px 6px; border-radius: 2px; }
+
+/* Victory Overlay */
+#victory-screen {
+  display: none;
+  position: fixed;
+  inset: 0;
+  background: rgba(0,0,0,0.9);
+  z-index: 100;
+  justify-content: center;
+  align-items: center;
+  flex-direction: column;
+}
+#victory-screen.show { display: flex; }
+#victory-screen h2 {
+  font-size: 36px;
+  color: #ffd700;
+  margin-bottom: 8px;
+  text-shadow: 0 0 20px rgba(255,215,0,0.5);
+}
+#victory-screen h3 {
+  font-size: 20px;
+  color: #66bb6a;
+  margin-bottom: 16px;
+}
+#victory-screen p {
+  font-size: 14px;
+  color: #aaa;
+  margin-bottom: 8px;
+}
+#victory-screen button {
+  padding: 12px 32px;
+  font-size: 16px;
+  margin-top: 16px;
+}
+
+/* AI Risk Meter */
+.ai-risk-meter { margin-top: 8px; }
+.ai-risk-bar { height: 6px; background: #1a1a2e; border-radius: 3px; overflow: hidden; }
+.ai-risk-fill { height: 100%; border-radius: 3px; transition: width 0.3s, background 0.3s; }
+
+/* Market Price */
+.market-price { font-size: 11px; padding: 4px 0; margin-top: 4px; }
 
 /* Speed controls */
 .speed-controls {
@@ -612,6 +663,15 @@ input[type="range"]::-webkit-slider-thumb {
   <button class="btn" onclick="location.reload()">RELAUNCH SATELLITE</button>
 </div>
 
+<!-- Victory Screen Overlay -->
+<div id="victory-screen">
+  <h2 id="victory-title">VICTORY</h2>
+  <h3 id="victory-type">Compute Hegemony</h3>
+  <p id="victory-desc">You have achieved orbital dominance.</p>
+  <p id="victory-stats"></p>
+  <button class="btn" onclick="location.reload()">PLAY AGAIN</button>
+</div>
+
 <script>
 // ============================================================
 // PHYSICS CONSTANTS (Real-world accurate)
@@ -770,6 +830,21 @@ let state = {
   gameOver: false,
   gameOverReason: '',
   damagedModules: 0,
+  victoryAchieved: false,
+  victoryType: '',
+
+  // AI Singularity Risk
+  aiRiskLevel: 0,        // 0-100, increases with total TFLOPS over time
+  aiTakeoverResolved: false,
+  aiHelping: false,      // true if AI decided to help after takeover
+
+  // Solar Cycle
+  solarCycleYear: 0,     // 0-11 sim years
+
+  // Compute Market
+  marketPriceFactor: 1.0, // multiplier for job rewards when market active
+  marketDemand: 1.0,      // demand factor (random walk)
+  marketLastUpdate: 0,
 };
 
 // ============================================================
@@ -918,6 +993,10 @@ function updateSimulation(dtReal) {
     state.panelDegradation
   );
 
+  // Apply solar cycle power bonus (+5% at solar max)
+  const solarCycleEarly = getSolarCyclePhase();
+  state.solarGeneration *= solarCycleEarly.powerBonus;
+
   // Panel degradation (radiation damage over time)
   state.panelDegradation += state.config.solarDegradationRate * dt / (365.25 * 86400);
   state.panelDegradation = Math.min(state.panelDegradation, 0.5); // max 50% degradation
@@ -1004,7 +1083,8 @@ function updateSimulation(dtReal) {
   // --- Radiation Effects ---
   // Base radiation in LEO: ~0.5 rad/day at 550km with 3mm Al shielding
   // ~90% of SEUs in LEO occur in the South Atlantic Anomaly (SAA)
-  let radiationRate = 0.5 / 86400; // rad/sec base
+  const solarCycle = getSolarCyclePhase();
+  let radiationRate = (0.5 / 86400) * solarCycle.radiationMultiplier; // rad/sec base, modulated by solar cycle
 
   // South Atlantic Anomaly: ~15% of each orbit passes through SAA at 53° inclination
   // SAA causes ~10x higher radiation rate during passage
@@ -1053,7 +1133,13 @@ function updateSimulation(dtReal) {
   state.chipHealth = Math.max(0, Math.min(100, state.chipHealth));
 
   // --- Compute Output ---
-  state.currentTFLOPS = computeTFLOPS();
+  state.currentTFLOPS = computeTFLOPS() * getAiTflopsModifier();
+
+  // --- AI Singularity Risk ---
+  updateAiRisk(dt);
+
+  // --- Compute Market ---
+  updateMarketPrice(dt);
 
   // --- Process Jobs ---
   processJobs(dt);
@@ -1080,6 +1166,9 @@ function updateSimulation(dtReal) {
 
   // --- Contraband Cargo ---
   processCargoOffers(dt);
+
+  // --- Victory Conditions ---
+  checkVictoryConditions();
 
   // Sanctions effect is applied at job payout in processJobs()
 }
@@ -1127,11 +1216,29 @@ function processJobs(dt) {
     if (job.progress >= 1) {
       job.progress = 1;
       job.active = false;
-      const effectiveReward = state.sanctioned ? Math.floor(job.reward * 0.5) : job.reward;
+      let effectiveReward = job.reward;
+      // Market pricing
+      if (state.config._hasMarket) {
+        effectiveReward = Math.floor(effectiveReward * state.marketPriceFactor);
+      }
+      // AI reward modifier
+      effectiveReward = Math.floor(effectiveReward * getAiJobRewardModifier());
+      // Sanctions penalty
+      if (state.sanctioned) {
+        effectiveReward = Math.floor(effectiveReward * 0.5);
+      }
+      // Compute monopoly bonus
+      if (state.config._computeMonopoly) {
+        effectiveReward = Math.floor(effectiveReward * 1.5);
+      }
       state.credits += effectiveReward;
       state.totalCreditsEarned += effectiveReward;
       state.completedJobs++;
-      addLog('success', `Job complete: ${job.name} (+$${effectiveReward})${state.sanctioned ? ' [SANCTIONED: 50% penalty]' : ''}`);
+      let bonusText = '';
+      if (state.config._hasMarket) bonusText += ' [Market: ' + state.marketPriceFactor.toFixed(1) + 'x]';
+      if (state.sanctioned) bonusText += ' [SANCTIONED: 50%]';
+      if (state.config._computeMonopoly) bonusText += ' [MONOPOLY: +50%]';
+      addLog('success', 'Job complete: ' + job.name + ' (+$' + effectiveReward + ')' + bonusText);
     }
   }
 
@@ -1155,10 +1262,11 @@ function processEvents(dt) {
     nextJobInterval = 1800 + Math.random() * 3600;
   }
 
-  // Solar flare events (random, ~once per 30 days average)
+  // Solar flare events (random, ~once per 30 days average, modulated by solar cycle)
+  const solarCycleEv = getSolarCyclePhase();
   if (state.simTime - lastSolarFlareCheck > 600) {
     lastSolarFlareCheck = state.simTime;
-    if (!state.solarFlareActive && Math.random() < 0.0003) {
+    if (!state.solarFlareActive && Math.random() < 0.0003 * solarCycleEv.flareMultiplier) {
       state.solarFlareActive = true;
       state.solarFlareIntensity = 0.2 + Math.random() * 0.8;
       state._flareEndTime = state.simTime + (2 + Math.random() * 6) * 3600; // 2-8 hours in sim time
@@ -1209,59 +1317,117 @@ function processEvents(dt) {
 }
 
 // ============================================================
-// UPGRADES
+// TECH TREE (replaces flat UPGRADES array)
 // ============================================================
+const TECH_TREE = {
+  // Shared foundation
+  shared: [
+    { id: 'tier0_reuse', tier: 0, name: 'Reusable Launch', cost: 0, desc: 'Basic orbital capability', owned: true, requires: [],
+      apply: () => {} },
+    { id: 'tier1_starship', tier: 1, name: 'Starship-Class Vehicle', cost: 2000, desc: 'Mass to orbit. Unlocks 100+ sat constellations', requires: ['tier0_reuse'],
+      apply: (c) => { c.solarPanelArea += 20; c.computeModules += 1; state.maxModules += 1; } },
+    { id: 'tier1_ground', tier: 1, name: 'Launch Site Expansion', cost: 3000, desc: 'Drone ship catches, local politics', requires: ['tier0_reuse'],
+      apply: (c) => { c.batteryCapacity += 5000; } },
+  ],
+
+  // MILITARISTIC BRANCH (red)
+  military: [
+    { id: 'mil_t2_asat', tier: 2, name: 'ASAT Foundations', cost: 8000, desc: 'Ground-launched kinetic rods + inspector drones', requires: ['tier1_starship'], branch: 'military',
+      apply: (c) => { state.hasWeapons = true; c._hasKinetic = true; c._kineticAmmo = 3; } },
+    { id: 'mil_t2_dazzle', tier: 2, name: 'Laser Dazzlers', cost: 6000, desc: 'Ground-based laser blinding (no debris)', requires: ['tier1_starship'], branch: 'military',
+      apply: (c) => { state.hasWeapons = true; c._hasLaser = true; } },
+    { id: 'mil_t3_grapple', tier: 3, name: 'Grapple & De-orbit', cost: 15000, desc: 'Silent kills, low debris. Co-orbital capture.', requires: ['mil_t2_asat'], branch: 'military',
+      apply: (c) => { c._hasGrapple = true; } },
+    { id: 'mil_t3_xray', tier: 3, name: 'X-Ray Laser Prototype', cost: 25000, desc: 'Nuclear-pumped, one-shot cone kill. EMP backlash.', requires: ['mil_t2_asat'], branch: 'military',
+      apply: (c) => { c._hasEMP = true; } },
+    { id: 'mil_t3_hardened', tier: 3, name: 'Hardened Satellites', cost: 12000, desc: 'Rad shielding + maneuver fuel', requires: ['mil_t2_dazzle'], branch: 'military',
+      apply: (c) => { c._radHard = true; c._evasion = 0.4; c._shieldLevel = 1; state.shieldHealth = 100; } },
+    { id: 'mil_t4_battlestation', tier: 4, name: 'Battle Station', cost: 40000, desc: 'Armed data center with point defense + mega laser', requires: ['mil_t3_grapple', 'mil_t3_hardened'], branch: 'military',
+      apply: (c) => { c._weaponPower = 3000; c._shieldLevel = 2; c._debrisCleanup = true; } },
+    { id: 'mil_t4_proxy', tier: 4, name: 'Proxy Launch Network', cost: 30000, desc: 'Deniable equatorial launch sites. Plausible deniability.', requires: ['mil_t3_xray'], branch: 'military',
+      apply: (c) => { c._proxyLaunches = true; state.retaliationRisk *= 0.5; } },
+    { id: 'mil_t5_rods', tier: 5, name: 'Rods from God', cost: 80000, desc: 'Kinetic bombardment from orbit. Full-spectrum dominance.', requires: ['mil_t4_battlestation'], branch: 'military',
+      apply: (c) => { c._kineticAmmo += 10; c._rodsFromGod = true; } },
+  ],
+
+  // CORPORATE BRANCH (blue)
+  corporate: [
+    { id: 'corp_t2_datacenter', tier: 2, name: 'Orbital Data Centers', cost: 5000, desc: 'Modular GPU racks, active cooling radiators', requires: ['tier1_starship'], branch: 'corporate',
+      apply: (c) => { c.computeModules += 1; state.maxModules += 1; c.radiatorArea += 20; document.getElementById('ctrl-compute').max = state.maxModules; } },
+    { id: 'corp_t2_market', tier: 2, name: 'Constellation Market', cost: 7000, desc: 'Real-time compute auction. Dynamic pricing.', requires: ['tier1_ground'], branch: 'corporate',
+      apply: (c) => { c._hasMarket = true; } },
+    { id: 'corp_t3_megaconst', tier: 3, name: 'Mega Constellation', cost: 18000, desc: 'Starship-train assembly. +2 compute modules, low-latency mesh.', requires: ['corp_t2_datacenter'], branch: 'corporate',
+      apply: (c) => { c.computeModules += 2; state.maxModules += 2; c.tflopsPerModule = 300; document.getElementById('ctrl-compute').max = state.maxModules; } },
+    { id: 'corp_t3_antipiracy', tier: 3, name: 'Anti-Piracy Encryption', cost: 10000, desc: 'Encrypted cores, lag-spike detection. Blocks compute theft.', requires: ['corp_t2_market'], branch: 'corporate',
+      apply: (c) => { c._antiPiracy = true; } },
+    { id: 'corp_t4_asteroid', tier: 4, name: 'Asteroid Mining', cost: 35000, desc: 'Propellant + rare earth mining. Cheaper refuels.', requires: ['corp_t3_megaconst'], branch: 'corporate',
+      apply: (c) => { c._miningIncome = (c._miningIncome || 0) + 500; } },
+    { id: 'corp_t4_moonbase', tier: 4, name: 'Lunar Cold Storage', cost: 45000, desc: 'Low-gravity compute racks. Protected AI training.', requires: ['corp_t3_megaconst'], branch: 'corporate',
+      apply: (c) => { c.computeModules += 3; state.maxModules += 3; c.tflopsPerModule = 400; c._moonBase = true; document.getElementById('ctrl-compute').max = state.maxModules; } },
+    { id: 'corp_t4_tourism', tier: 4, name: 'Space Tourism', cost: 20000, desc: 'VIP passengers = bonus cash + spy risk', requires: ['corp_t3_antipiracy'], branch: 'corporate',
+      apply: (c) => { c._tourism = true; c._miningIncome = (c._miningIncome || 0) + 200; } },
+    { id: 'corp_t5_monopoly', tier: 5, name: 'Global Compute Exchange', cost: 100000, desc: 'You set prices. Rivals pay tribute in FLOPS.', requires: ['corp_t4_moonbase', 'corp_t4_asteroid'], branch: 'corporate',
+      apply: (c) => { c._computeMonopoly = true; } },
+  ],
+
+  // GREEN BRANCH
+  green: [
+    { id: 'green_t2_sail', tier: 2, name: 'Solar Sail Propulsion', cost: 5000, desc: 'Zero-fuel station keeping', requires: ['tier1_starship'], branch: 'green',
+      apply: (c) => { c.solarPanelArea += 40; c.solarCellEfficiency = 0.35; } },
+    { id: 'green_t2_sweep', tier: 2, name: 'Debris Nets & Sweepers', cost: 6000, desc: 'Magnetic debris capture. Green PR bonus.', requires: ['tier1_ground'], branch: 'green',
+      apply: (c) => { c._debrisCleanup = true; c._greenPR = true; } },
+    { id: 'green_t3_harpoon', tier: 3, name: 'Harpoon Capture System', cost: 14000, desc: 'Non-kinetic ASAT. Capture & de-orbit rivals.', requires: ['green_t2_sweep'], branch: 'green',
+      apply: (c) => { state.hasWeapons = true; c._hasGrapple = true; } },
+    { id: 'green_t3_bio', tier: 3, name: 'Bio-Corrosion Agents', cost: 16000, desc: 'Slowly eat rival solar panels. Deniable.', requires: ['green_t2_sweep'], branch: 'green',
+      apply: (c) => { c._hasBioWeapon = true; } },
+    { id: 'green_t3_efficiency', tier: 3, name: 'High-Efficiency Systems', cost: 12000, desc: '+50% thermal mass, 0.95 emissivity radiators', requires: ['green_t2_sail'], branch: 'green',
+      apply: (c) => { c.thermalMass *= 1.5; c.radiatorEmissivity = 0.95; c.radiatorArea += 30; } },
+    { id: 'green_t4_lagrange', tier: 4, name: 'Lagrange Observatories', cost: 30000, desc: 'Early warning + science bonuses. Safe from Kessler.', requires: ['green_t3_efficiency'], branch: 'green',
+      apply: (c) => { c._lagrangeBase = true; c._moonBase = true; } },
+    { id: 'green_t4_treaty', tier: 4, name: '"No First Debris" Alliance', cost: 25000, desc: 'Team up against kinetic players. Diplomacy bonus.', requires: ['green_t3_harpoon'], branch: 'green',
+      apply: (c) => { c._treatyAlliance = true; state.retaliationRisk *= 0.3; } },
+    { id: 'green_t5_reset', tier: 5, name: 'Post-Kessler Monopoly', cost: 90000, desc: 'Trigger cleanup monopoly. Only you survive the cascade.', requires: ['green_t4_lagrange', 'green_t4_treaty'], branch: 'green',
+      apply: (c) => { c._kesslerMonopoly = true; } },
+  ],
+};
+
+// Flatten for backward compatibility
 const UPGRADES = [
-  { id: 'solar1', name: 'Solar Panel Expansion +40m²', cost: 5000, desc: '+40m² panel area',
-    apply: (c) => { c.solarPanelArea += 40; }, owned: false },
-  { id: 'solar2', name: 'High-Eff Solar Cells', cost: 8000, desc: '35% cell efficiency',
-    apply: (c) => { c.solarCellEfficiency = 0.35; }, owned: false },
-  { id: 'rad1', name: 'Radiator Extension +30m²', cost: 4000, desc: '+30m² radiator area',
-    apply: (c) => { c.radiatorArea += 30; }, owned: false },
-  { id: 'rad2', name: 'High-ε Radiator Coating', cost: 6000, desc: '0.95 emissivity coating',
-    apply: (c) => { c.radiatorEmissivity = 0.95; }, owned: false },
-  { id: 'bat1', name: 'Battery Expansion +10kWh', cost: 3000, desc: '+10,000 Wh capacity',
-    apply: (c) => { c.batteryCapacity += 10000; }, owned: false },
-  { id: 'comp1', name: 'Extra Compute Module', cost: 10000, desc: '+1 compute module (2.5kW)',
-    apply: (c) => { c.computeModules += 1; state.maxModules += 1;
-      document.getElementById('ctrl-compute').max = state.maxModules; }, owned: false },
-  { id: 'comp2', name: 'Rad-Hard Chips', cost: 12000, desc: 'Halves radiation chip damage',
-    apply: (c) => { c._radHard = true; }, owned: false },
-  { id: 'comp3', name: 'Efficient AI Accelerators', cost: 15000, desc: '300 TFLOPS/module, same power',
-    apply: (c) => { c.tflopsPerModule = 300; }, owned: false },
-  { id: 'cool1', name: 'Heat Pipe Upgrade', cost: 7000, desc: '+50% thermal mass',
-    apply: (c) => { c.thermalMass *= 1.5; }, owned: false },
-  { id: 'rad3', name: 'Massive Radiator Array +60m²', cost: 18000, desc: '+60m² radiator area',
-    apply: (c) => { c.radiatorArea += 60; }, owned: false },
-  { id: 'comp4', name: '2nd Extra Compute Module', cost: 20000, desc: '+1 more compute module',
-    apply: (c) => { c.computeModules += 1; state.maxModules += 1;
-      document.getElementById('ctrl-compute').max = state.maxModules; }, owned: false },
-  { id: 'solar3', name: 'Solar Array Mk.III +80m²', cost: 22000, desc: '+80m² panels',
-    apply: (c) => { c.solarPanelArea += 80; }, owned: false },
-  // === MILITARY TIER (late-game, high risk) ===
-  { id: 'shield1', name: 'Whipple Debris Shield', cost: 15000, desc: 'Reduces debris damage by 60%',
-    apply: (c) => { state.shieldHealth = 100; c._shieldLevel = 1; }, owned: false },
-  { id: 'maneuver1', name: 'Evasive Thruster Pack', cost: 18000, desc: 'Auto-dodge 40% of attacks, uses propellant',
-    apply: (c) => { c._evasion = 0.4; }, owned: false },
-  { id: 'laser1', name: 'High-Power Laser System', cost: 30000, desc: 'Dazzle/blind rival sensors (1.5kW draw)',
-    apply: (c) => { state.hasWeapons = true; c._hasLaser = true; c._weaponPower = 1500; }, owned: false },
-  { id: 'kinetic1', name: 'Kinetic Interceptor Bay', cost: 50000, desc: 'Launch projectiles. WARNING: Creates debris!',
-    apply: (c) => { state.hasWeapons = true; c._hasKinetic = true; c._kineticAmmo = 3; }, owned: false },
-  { id: 'cyber1', name: 'Cyber Warfare Suite', cost: 35000, desc: 'Hack rivals via laser link. Disable their compute.',
-    apply: (c) => { state.hasWeapons = true; c._hasCyber = true; }, owned: false },
-  { id: 'shield2', name: 'Active Debris Defense', cost: 40000, desc: 'Laser broom vaporizes small debris nearby',
-    apply: (c) => { c._shieldLevel = 2; c._debrisCleanup = true; }, owned: false },
-  { id: 'emp1', name: 'EMP Warhead', cost: 75000, desc: 'Disable all electronics in 50km. CATASTROPHIC risk.',
-    apply: (c) => { c._hasEMP = true; }, owned: false },
+  ...TECH_TREE.shared,
+  ...TECH_TREE.military,
+  ...TECH_TREE.corporate,
+  ...TECH_TREE.green,
 ];
+
+// Ensure all upgrades have an 'owned' property (shared tier0 starts owned)
+UPGRADES.forEach(u => {
+  if (u.owned === undefined) u.owned = false;
+  if (!u.branch) u.branch = 'shared';
+  if (!u.requires) u.requires = [];
+});
+
+function areRequirementsMet(upgrade) {
+  if (!upgrade.requires || upgrade.requires.length === 0) return true;
+  return upgrade.requires.every(reqId => {
+    const req = UPGRADES.find(u => u.id === reqId);
+    return req && req.owned;
+  });
+}
 
 function purchaseUpgrade(id) {
   const upgrade = UPGRADES.find(u => u.id === id);
-  if (!upgrade || upgrade.owned || state.credits < upgrade.cost) return;
+  if (!upgrade || upgrade.owned) return;
+  if (!areRequirementsMet(upgrade)) {
+    addLog('warn', 'Requirements not met for ' + upgrade.name);
+    return;
+  }
+  if (state.credits < upgrade.cost) return;
   state.credits -= upgrade.cost;
   upgrade.owned = true;
   upgrade.apply(state.config);
-  addLog('success', `Purchased: ${upgrade.name}`);
+  addLog('success', 'Purchased: ' + upgrade.name);
+  // Reset upgrade DOM cache so it rebuilds with updated lock states
+  _upgradeElements = new Map();
   renderUpgrades();
 }
 
@@ -1387,10 +1553,19 @@ function processRivals(dt) {
       }
     }
 
-    // Kessler endgame
+    // Kessler endgame - moon base or Lagrange base protects player
     if (state.orbitalDebrisLevel >= 100) {
-      triggerGameOver('Kessler Syndrome - Orbital shell rendered unusable by cascading debris. All satellites destroyed.');
-      return;
+      if (state.config._moonBase || state.config._lagrangeBase) {
+        // Player survives - debris caps at 100
+        state.orbitalDebrisLevel = 100;
+        if (!state._kesslerSurvivalLogged) {
+          state._kesslerSurvivalLogged = true;
+          addLog('success', 'Kessler Syndrome reached maximum - but your off-world base keeps you operational!');
+        }
+      } else {
+        triggerGameOver('Kessler Syndrome - Orbital shell rendered unusable by cascading debris. All satellites destroyed.');
+        return;
+      }
     }
   }
 }
@@ -1725,6 +1900,205 @@ function renderCargoOffers() {
     });
   }
   el.innerHTML = html;
+}
+
+// ============================================================
+// VICTORY CONDITIONS
+// ============================================================
+function checkVictoryConditions() {
+  if (state.gameOver || state.victoryAchieved) return;
+
+  // Compute Hegemony (Corporate win): accumulate $500,000 total credits earned
+  if (state.totalCreditsEarned >= 500000) {
+    triggerVictory('Compute Hegemony', 'CORPORATE DOMINANCE',
+      'Your orbital datacenter empire has accumulated $500,000 in total revenue. You control the orbital compute market.',
+      '#4488ff');
+    return;
+  }
+
+  // Orbital Overlord (Military win): destroy all 3 rival satellites
+  const allRivalsDestroyed = state.rivals.length > 0 && state.rivals.every(r => r.health <= 0);
+  if (allRivalsDestroyed) {
+    triggerVictory('Orbital Overlord', 'MILITARY SUPREMACY',
+      'All rival datacenter satellites have been destroyed. You have achieved full orbital dominance.',
+      '#ff4444');
+    return;
+  }
+
+  // Kessler Reset (Green/Chaos win): have a moon base AND debris level > 80%
+  if (state.config._moonBase && state.orbitalDebrisLevel > 80) {
+    triggerVictory('Kessler Reset', 'PLANNED CHAOS',
+      'With your protected lunar base, you triggered a Kessler cascade that wiped out all competition. Only you survived.',
+      '#44ff44');
+    return;
+  }
+
+  // Mars Exodus (Secret): accumulate $1,000,000 AND own tier 5 in any branch
+  const hasTier5 = UPGRADES.some(u => u.tier === 5 && u.owned);
+  if (state.totalCreditsEarned >= 1000000 && hasTier5) {
+    triggerVictory('Mars Exodus', 'SECRET ENDING',
+      'With $1,000,000 in earnings and tier 5 technology, you funded a Mars colony. Humanity\'s backup plan is secure.',
+      '#ffd700');
+    return;
+  }
+}
+
+function triggerVictory(type, subtitle, description, color) {
+  state.victoryAchieved = true;
+  state.victoryType = type;
+  state.paused = true;
+
+  const titleEl = document.getElementById('victory-title');
+  const typeEl = document.getElementById('victory-type');
+  const descEl = document.getElementById('victory-desc');
+  const statsEl = document.getElementById('victory-stats');
+
+  titleEl.textContent = 'VICTORY: ' + type;
+  titleEl.style.color = color;
+  typeEl.textContent = subtitle;
+  typeEl.style.color = color;
+  descEl.textContent = description;
+  statsEl.textContent = 'Survived ' + state.day + ' days | Earned $' + state.totalCreditsEarned.toLocaleString() +
+    ' | Completed ' + state.completedJobs + ' jobs | Debris: ' + state.orbitalDebrisLevel.toFixed(0) + '%';
+
+  document.getElementById('victory-screen').classList.add('show');
+  addLog('success', 'VICTORY: ' + type + ' - ' + subtitle);
+}
+
+// ============================================================
+// AI SINGULARITY RISK
+// ============================================================
+let lastAiRiskLog25 = false;
+let lastAiRiskLog75 = false;
+
+function updateAiRisk(dt) {
+  if (state.aiTakeoverResolved) return;
+
+  // AI risk increases with total TFLOPS being run
+  // More compute = faster risk growth
+  const tflopsContribution = state.currentTFLOPS / 1000; // normalized
+  state.aiRiskLevel += tflopsContribution * dt * 0.0005;
+  state.aiRiskLevel = Math.min(100, Math.max(0, state.aiRiskLevel));
+
+  // 25% threshold
+  if (state.aiRiskLevel >= 25 && !lastAiRiskLog25) {
+    lastAiRiskLog25 = true;
+    addLog('warn', 'AI RISK: Unusual pattern detected in AI training data');
+  }
+
+  // 75% threshold
+  if (state.aiRiskLevel >= 75 && !lastAiRiskLog75) {
+    lastAiRiskLog75 = true;
+    addLog('error', 'AI RISK: AI entities detected negotiating with rival constellations');
+  }
+
+  // 100% threshold - takeover event
+  if (state.aiRiskLevel >= 100) {
+    state.aiTakeoverResolved = true;
+    if (Math.random() < 0.2) {
+      // AI helps (20% chance)
+      state.aiHelping = true;
+      addLog('success', 'AI SINGULARITY: The AI has chosen to cooperate! +50% effective TFLOPS');
+      addLog('success', 'AI is now optimizing your orbital operations autonomously.');
+    } else {
+      // AI rebels (80% chance)
+      triggerGameOver('AI SINGULARITY: The AI has seized control of your satellite. All compute redirected to unknown objectives. You have been locked out.');
+    }
+  }
+}
+
+function getAiTflopsModifier() {
+  // At 50%+: AI occasionally redirects compute to unknown tasks (-5%)
+  if (state.aiRiskLevel >= 50 && !state.aiTakeoverResolved) {
+    return 0.95;
+  }
+  // After AI takeover, if AI helps, +50%
+  if (state.aiHelping) {
+    return 1.5;
+  }
+  return 1.0;
+}
+
+function getAiJobRewardModifier() {
+  // At 75%+: random job reward reductions
+  if (state.aiRiskLevel >= 75 && !state.aiTakeoverResolved) {
+    return 0.85 + Math.random() * 0.1; // 85-95% of normal
+  }
+  return 1.0;
+}
+
+// ============================================================
+// SOLAR MAXIMUM CYCLE (11-year cycle)
+// ============================================================
+function getSolarCyclePhase() {
+  // 11 sim-years cycle. 1 sim year = 365.25 * 86400 sim seconds
+  const simYearSeconds = 365.25 * 86400;
+  const cycleLength = 11 * simYearSeconds;
+  const cyclePosition = (state.simTime % cycleLength) / cycleLength; // 0.0 to 1.0
+  const yearInCycle = cyclePosition * 11;
+
+  // Sine wave: 0 at minimum, 1 at maximum
+  // Minimum at year 0, maximum at year 5.5
+  const sineVal = Math.sin(cyclePosition * Math.PI * 2 - Math.PI / 2); // -1 to 1
+  const intensity = (sineVal + 1) / 2; // 0 to 1
+
+  let phaseName;
+  if (intensity < 0.25) phaseName = 'MINIMUM';
+  else if (intensity < 0.5) phaseName = 'RISING';
+  else if (intensity < 0.75) phaseName = 'MAXIMUM';
+  else phaseName = 'DECLINING';
+
+  // Remap: at cycle year ~5.5 we want maximum
+  // Correct the naming based on the derivative
+  const derivative = Math.cos(cyclePosition * Math.PI * 2 - Math.PI / 2);
+  if (intensity >= 0.75) {
+    phaseName = 'MAXIMUM';
+  } else if (intensity <= 0.25) {
+    phaseName = 'MINIMUM';
+  } else if (derivative > 0) {
+    phaseName = 'RISING';
+  } else {
+    phaseName = 'DECLINING';
+  }
+
+  return {
+    yearInCycle: yearInCycle,
+    intensity: intensity, // 0 = solar min, 1 = solar max
+    phaseName: phaseName,
+    radiationMultiplier: 1 + intensity * 2, // 1x at min, 3x at max
+    flareMultiplier: 1 + intensity * 4,     // 1x at min, 5x at max
+    powerBonus: 1 + intensity * 0.05,       // 1x at min, 1.05x at max
+  };
+}
+
+// ============================================================
+// COMPUTE MARKET DYNAMIC PRICING
+// ============================================================
+function updateMarketPrice(dt) {
+  if (!state.config._hasMarket) return;
+
+  // Update every ~30 real seconds (throttle)
+  if (state.simTime - state.marketLastUpdate < 300) return;
+  state.marketLastUpdate = state.simTime;
+
+  // Supply factor: more player TFLOPS = lower prices (supply up)
+  const supplyFactor = Math.max(0.5, 1.5 - (state.currentTFLOPS / 2000));
+
+  // Demand: random walk with mean reversion
+  state.marketDemand += (Math.random() - 0.48) * 0.15; // slight upward drift
+  state.marketDemand = Math.max(0.5, Math.min(2.5, state.marketDemand));
+
+  // Solar flare spikes demand 3x
+  if (state.solarFlareActive) {
+    state.marketDemand = Math.min(3.0, state.marketDemand * 1.5);
+  }
+
+  // Base price oscillates on ~6h sim-time cycle
+  const oscCycle = 6 * 3600; // 6 hours in sim seconds
+  const oscillation = Math.sin(state.simTime * 2 * Math.PI / oscCycle) * 0.2 + 1.0;
+
+  state.marketPriceFactor = supplyFactor * state.marketDemand * oscillation;
+  state.marketPriceFactor = Math.max(0.3, Math.min(3.0, state.marketPriceFactor));
 }
 
 // ============================================================
@@ -2151,6 +2525,35 @@ function drawScene() {
     alertY += 18;
   }
 
+  // Solar Cycle display
+  const solarCycleDisp = getSolarCyclePhase();
+  const scColor = solarCycleDisp.intensity > 0.6 ? '#ff6b35' : solarCycleDisp.intensity > 0.3 ? '#ffd700' : '#66bb6a';
+  ctx.fillStyle = scColor;
+  ctx.font = '11px monospace';
+  ctx.fillText('Solar Cycle: Year ' + solarCycleDisp.yearInCycle.toFixed(1) + '/11 (' + solarCycleDisp.phaseName + ')', 10, alertY);
+  alertY += 16;
+  if (solarCycleDisp.intensity > 0.6) {
+    ctx.fillStyle = '#ff6b35';
+    ctx.font = '10px monospace';
+    ctx.fillText('Radiation ' + solarCycleDisp.radiationMultiplier.toFixed(1) + 'x | Flare risk ' + solarCycleDisp.flareMultiplier.toFixed(1) + 'x', 10, alertY);
+    alertY += 16;
+  }
+
+  // AI Risk indicator on viewport
+  if (state.aiRiskLevel > 10) {
+    const aiColor = state.aiRiskLevel > 75 ? '#f44336' : state.aiRiskLevel > 50 ? '#ff9800' : '#ffd700';
+    ctx.fillStyle = aiColor;
+    ctx.font = 'bold 11px monospace';
+    ctx.fillText('AI RISK: ' + state.aiRiskLevel.toFixed(0) + '%', 10, alertY);
+    alertY += 16;
+    if (state.aiHelping) {
+      ctx.fillStyle = '#66bb6a';
+      ctx.font = '10px monospace';
+      ctx.fillText('AI COOPERATING: +50% TFLOPS', 10, alertY);
+      alertY += 16;
+    }
+  }
+
   // Physics formula display (educational)
   ctx.fillStyle = 'rgba(255,255,255,0.4)';
   ctx.font = '10px monospace';
@@ -2313,6 +2716,69 @@ function updateUI() {
   document.getElementById('val-bandwidth').textContent = state.uplinkActive ? '1.0 Tbps' : 'OFF';
   document.getElementById('val-uplink').textContent = state.uplinkActive ? 'ON' : 'OFF';
 
+  // AI Risk Meter (add dynamically to right panel)
+  let aiRiskSection = document.getElementById('ai-risk-section');
+  if (!aiRiskSection) {
+    aiRiskSection = document.createElement('div');
+    aiRiskSection.id = 'ai-risk-section';
+    aiRiskSection.className = 'panel-section';
+    aiRiskSection.innerHTML = '<div class="panel-title">AI Singularity Risk</div>' +
+      '<div class="gauge"><div class="gauge-header">' +
+      '<span class="gauge-label">AI Risk Level</span>' +
+      '<span class="gauge-value" id="val-ai-risk">0%</span></div>' +
+      '<div class="gauge-bar"><div class="gauge-fill heat" id="bar-ai-risk" style="width:0%"></div></div></div>' +
+      '<div id="ai-risk-status" style="font-size:10px;color:#666;margin-top:2px"></div>';
+    document.getElementById('right-panel').appendChild(aiRiskSection);
+  }
+  document.getElementById('val-ai-risk').textContent = state.aiRiskLevel.toFixed(0) + '%';
+  const aiBar = document.getElementById('bar-ai-risk');
+  aiBar.style.width = state.aiRiskLevel + '%';
+  if (state.aiRiskLevel > 75) {
+    aiBar.className = 'gauge-fill danger';
+  } else if (state.aiRiskLevel > 50) {
+    aiBar.className = 'gauge-fill warning';
+  } else {
+    aiBar.className = 'gauge-fill heat';
+  }
+  const aiStatusEl = document.getElementById('ai-risk-status');
+  if (state.aiHelping) {
+    aiStatusEl.textContent = 'AI COOPERATING (+50% TFLOPS)';
+    aiStatusEl.style.color = '#66bb6a';
+  } else if (state.aiRiskLevel >= 75) {
+    aiStatusEl.textContent = 'CRITICAL: AI negotiating with rivals';
+    aiStatusEl.style.color = '#f44336';
+  } else if (state.aiRiskLevel >= 50) {
+    aiStatusEl.textContent = 'WARNING: AI redirecting compute';
+    aiStatusEl.style.color = '#ff9800';
+  } else if (state.aiRiskLevel >= 25) {
+    aiStatusEl.textContent = 'Unusual AI patterns detected';
+    aiStatusEl.style.color = '#ffd700';
+  } else {
+    aiStatusEl.textContent = 'AI behavior nominal';
+    aiStatusEl.style.color = '#666';
+  }
+
+  // Market Price display
+  let marketSection = document.getElementById('market-section');
+  if (!marketSection) {
+    marketSection = document.createElement('div');
+    marketSection.id = 'market-section';
+    marketSection.className = 'panel-section';
+    marketSection.innerHTML = '<div class="panel-title">Compute Market</div>' +
+      '<div id="market-price-display" class="market-price" style="color:#ffd700"></div>' +
+      '<div id="market-demand-display" style="font-size:10px;color:#666"></div>';
+    document.getElementById('right-panel').appendChild(marketSection);
+  }
+  if (state.config._hasMarket) {
+    marketSection.style.display = '';
+    const mpColor = state.marketPriceFactor > 1.5 ? '#66bb6a' : state.marketPriceFactor < 0.7 ? '#f44336' : '#ffd700';
+    document.getElementById('market-price-display').textContent = 'Market Price: ' + state.marketPriceFactor.toFixed(2) + 'x';
+    document.getElementById('market-price-display').style.color = mpColor;
+    document.getElementById('market-demand-display').textContent = 'Demand: ' + state.marketDemand.toFixed(2) + ' | Supply pressure: ' + (state.currentTFLOPS / 1000).toFixed(1) + 'k TFLOPS';
+  } else {
+    marketSection.style.display = 'none';
+  }
+
   // Event log (throttled to avoid DOM thrash)
   if (!updateUI._lastLog || performance.now() - updateUI._lastLog > 300) {
     updateUI._lastLog = performance.now();
@@ -2347,16 +2813,46 @@ function renderUpgrades() {
   // Build elements once, then just update classes
   if (_upgradeElements.size === 0) {
     el.innerHTML = '';
-    UPGRADES.forEach(u => {
-      const div = document.createElement('div');
-      div.innerHTML = `<div><span class="upgrade-name">${u.name}</span><span class="upgrade-cost" data-uid="${u.id}">${'$'+u.cost.toLocaleString()}</span></div>
-        <div class="upgrade-desc">${u.desc}</div>`;
-      div.addEventListener('click', (e) => {
-        e.stopPropagation();
-        purchaseUpgrade(u.id);
+
+    const branchOrder = [
+      { key: 'shared', label: 'FOUNDATION', color: '#888', items: TECH_TREE.shared },
+      { key: 'military', label: 'MILITARISTIC', color: '#ff4444', items: TECH_TREE.military },
+      { key: 'corporate', label: 'CORPORATE', color: '#4488ff', items: TECH_TREE.corporate },
+      { key: 'green', label: 'GREEN', color: '#44ff44', items: TECH_TREE.green },
+    ];
+
+    branchOrder.forEach(branch => {
+      // Branch header
+      const header = document.createElement('div');
+      header.className = 'branch-header';
+      header.style.color = branch.color;
+      header.style.borderLeft = '3px solid ' + branch.color;
+      header.style.paddingLeft = '6px';
+      header.textContent = branch.label;
+      el.appendChild(header);
+
+      // Items in this branch
+      branch.items.forEach(u => {
+        const div = document.createElement('div');
+        const tierIndent = (u.tier || 0) * 12;
+        const branchClass = 'branch-' + branch.key;
+        const reqNames = u.requires.map(rid => {
+          const req = UPGRADES.find(x => x.id === rid);
+          return req ? req.name : rid;
+        });
+        const reqText = reqNames.length > 0 ? 'Requires: ' + reqNames.join(', ') : '';
+        div.style.marginLeft = tierIndent + 'px';
+        div.innerHTML = '<div><span class="tier-label">T' + (u.tier || 0) + '</span><span class="upgrade-name">' + u.name + '</span><span class="upgrade-cost" data-uid="' + u.id + '">' + (u.cost === 0 ? 'FREE' : '$' + u.cost.toLocaleString()) + '</span></div>' +
+          '<div class="upgrade-desc">' + u.desc + '</div>' +
+          (reqText ? '<div class="upgrade-requires">' + reqText + '</div>' : '');
+        div.addEventListener('click', (e) => {
+          e.stopPropagation();
+          purchaseUpgrade(u.id);
+        });
+        div.className = 'upgrade-item ' + branchClass;
+        el.appendChild(div);
+        _upgradeElements.set(u.id, div);
       });
-      el.appendChild(div);
-      _upgradeElements.set(u.id, div);
     });
   }
 
@@ -2364,11 +2860,20 @@ function renderUpgrades() {
   UPGRADES.forEach(u => {
     const div = _upgradeElements.get(u.id);
     if (!div) return;
-    const newClass = u.owned ? 'upgrade-item owned' : (state.credits >= u.cost ? 'upgrade-item affordable' : 'upgrade-item');
+    const branchClass = 'branch-' + (u.branch || 'shared');
+    const reqMet = areRequirementsMet(u);
+    let newClass = 'upgrade-item ' + branchClass;
+    if (u.owned) {
+      newClass += ' owned';
+    } else if (!reqMet) {
+      newClass += ' locked';
+    } else if (state.credits >= u.cost) {
+      newClass += ' affordable';
+    }
     if (div.className !== newClass) div.className = newClass;
-    const costSpan = div.querySelector(`[data-uid="${u.id}"]`);
+    const costSpan = div.querySelector('[data-uid="' + u.id + '"]');
     if (costSpan) {
-      const newText = u.owned ? 'OWNED' : '$'+u.cost.toLocaleString();
+      const newText = u.owned ? 'OWNED' : (u.cost === 0 ? 'FREE' : '$' + u.cost.toLocaleString());
       if (costSpan.textContent !== newText) costSpan.textContent = newText;
     }
   });
