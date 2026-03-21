@@ -592,12 +592,14 @@ input[type="range"]::-webkit-slider-thumb {
       <div id="event-log"></div>
     </div>
     <div class="bottom-section">
-      <div class="bottom-section-title">Active Jobs</div>
+      <div class="bottom-section-title">Jobs & Cargo</div>
       <div id="active-jobs"></div>
+      <div id="cargo-offers" style="margin-top:8px"></div>
     </div>
     <div class="bottom-section">
-      <div class="bottom-section-title">Upgrades</div>
+      <div class="bottom-section-title">Upgrades & Combat</div>
       <div id="upgrades-list"></div>
+      <div id="combat-panel" style="margin-top:8px"></div>
     </div>
   </div>
 </div>
@@ -754,6 +756,18 @@ let state = {
   seuRate: 0,               // current rate per second
   inSAA: false,             // South Atlantic Anomaly passage
   saaAngle: 0,              // tracking SAA position in orbit
+
+  // Combat & Rivals
+  rivals: [],               // AI rival satellites
+  orbitalDebrisLevel: 0,    // 0-100, Kessler syndrome risk
+  debrisFieldDensity: 0,    // debris objects per km³
+  shieldHealth: 0,          // 0-100 (0 = no shield)
+  hasWeapons: false,
+  attackCooldown: 0,        // seconds until next attack available
+  retaliationRisk: 0,       // 0-1 chance of being attacked back
+  kesslerCascade: false,    // true = runaway debris cascade
+  sanctioned: false,        // international sanctions after attack
+  sanctionTimer: 0,         // seconds remaining
 
   // Game
   gameOver: false,
@@ -1059,6 +1073,22 @@ function updateSimulation(dtReal) {
 
   // --- Random Events ---
   processEvents(dt);
+
+  // --- Rivals & Combat ---
+  processRivals(dt);
+
+  // --- Contraband Cargo ---
+  processCargoOffers(dt);
+
+  // --- Sanctions effect on income ---
+  if (state.sanctioned) {
+    // Sanctions halve job rewards
+    for (const job of state.jobs) {
+      if (job.active && job.progress >= 1) {
+        job.reward = Math.floor(job.reward * 0.5);
+      }
+    }
+  }
 }
 
 // ============================================================
@@ -1212,6 +1242,21 @@ const UPGRADES = [
       document.getElementById('ctrl-compute').max = state.maxModules; }, owned: false },
   { id: 'solar3', name: 'Solar Array Mk.III +80m²', cost: 22000, desc: '+80m² panels',
     apply: (c) => { c.solarPanelArea += 80; }, owned: false },
+  // === MILITARY TIER (late-game, high risk) ===
+  { id: 'shield1', name: 'Whipple Debris Shield', cost: 15000, desc: 'Reduces debris damage by 60%',
+    apply: (c) => { state.shieldHealth = 100; c._shieldLevel = 1; }, owned: false },
+  { id: 'maneuver1', name: 'Evasive Thruster Pack', cost: 18000, desc: 'Auto-dodge 40% of attacks, uses propellant',
+    apply: (c) => { c._evasion = 0.4; }, owned: false },
+  { id: 'laser1', name: 'High-Power Laser System', cost: 30000, desc: 'Dazzle/blind rival sensors (1.5kW draw)',
+    apply: (c) => { state.hasWeapons = true; c._weaponType = 'laser'; c._weaponPower = 1500; }, owned: false },
+  { id: 'kinetic1', name: 'Kinetic Interceptor Bay', cost: 50000, desc: 'Launch projectiles. WARNING: Creates debris!',
+    apply: (c) => { state.hasWeapons = true; c._weaponType = 'kinetic'; c._kineticAmmo = 3; }, owned: false },
+  { id: 'cyber1', name: 'Cyber Warfare Suite', cost: 35000, desc: 'Hack rivals via laser link. Disable their compute.',
+    apply: (c) => { state.hasWeapons = true; c._weaponType = 'cyber'; }, owned: false },
+  { id: 'shield2', name: 'Active Debris Defense', cost: 40000, desc: 'Laser broom vaporizes small debris nearby',
+    apply: (c) => { c._shieldLevel = 2; c._debrisCleanup = true; }, owned: false },
+  { id: 'emp1', name: 'EMP Warhead', cost: 75000, desc: 'Disable all electronics in 50km. CATASTROPHIC risk.',
+    apply: (c) => { c._hasEMP = true; }, owned: false },
 ];
 
 function purchaseUpgrade(id) {
@@ -1222,6 +1267,503 @@ function purchaseUpgrade(id) {
   upgrade.apply(state.config);
   addLog('success', `Purchased: ${upgrade.name}`);
   renderUpgrades();
+}
+
+// ============================================================
+// RIVALS & COMBAT SYSTEM
+// ============================================================
+const RIVAL_NAMES = [
+  { name: 'ChinaStar-7', nation: 'CNSA', color: '#ff4444' },
+  { name: 'EU-CloudSat', nation: 'ESA', color: '#4488ff' },
+  { name: 'Roscosmos-DC', nation: 'RKA', color: '#44ff44' },
+  { name: 'AmazonOrbit-3', nation: 'AMZN', color: '#ff8800' },
+  { name: 'GoogleSky-1', nation: 'GOOG', color: '#8844ff' },
+];
+
+function initRivals() {
+  // Spawn 3 rival datacenter satellites
+  for (let i = 0; i < 3; i++) {
+    const template = RIVAL_NAMES[i];
+    state.rivals.push({
+      ...template,
+      id: i,
+      orbitalAngle: Math.random() * Math.PI * 2,
+      health: 100,
+      shieldLevel: 0,
+      computing: true,
+      disabled: false,
+      disabledUntil: 0,
+      retaliating: false,
+      retaliationCooldown: 0,
+      lastAttackedBy: null,
+    });
+  }
+}
+
+function processRivals(dt) {
+  // Move rivals in orbit
+  for (const rival of state.rivals) {
+    rival.orbitalAngle = (rival.orbitalAngle + (2 * Math.PI * dt / state.orbitalPeriod) * (0.98 + rival.id * 0.01)) % (2 * Math.PI);
+
+    // Re-enable disabled rivals after timeout
+    if (rival.disabled && state.simTime >= rival.disabledUntil) {
+      rival.disabled = false;
+      rival.computing = true;
+      addLog('info', `${rival.name} has recovered systems`);
+    }
+
+    // Rival retaliation logic
+    if (rival.retaliating && !rival.disabled && state.simTime >= rival.retaliationCooldown) {
+      rival.retaliating = false;
+      const retaliateChance = 0.3 + (state.retaliationRisk * 0.5);
+      if (Math.random() < retaliateChance) {
+        executeRivalAttack(rival);
+      }
+    }
+  }
+
+  // Attack cooldown
+  if (state.attackCooldown > 0) {
+    state.attackCooldown = Math.max(0, state.attackCooldown - dt);
+  }
+
+  // Sanction timer
+  if (state.sanctioned && state.sanctionTimer > 0) {
+    state.sanctionTimer = Math.max(0, state.sanctionTimer - dt);
+    if (state.sanctionTimer <= 0) {
+      state.sanctioned = false;
+      addLog('info', 'International sanctions have been lifted');
+    }
+  }
+
+  // Kessler syndrome escalation
+  if (state.orbitalDebrisLevel > 0) {
+    // Debris slowly grows if above critical threshold (chain reaction)
+    if (state.orbitalDebrisLevel > 60) {
+      state.orbitalDebrisLevel += 0.0001 * dt * (state.orbitalDebrisLevel / 60);
+      if (!state.kesslerCascade && state.orbitalDebrisLevel > 80) {
+        state.kesslerCascade = true;
+        addLog('error', 'KESSLER CASCADE INITIATED - Debris generating more debris!');
+        addLog('error', 'All satellites in orbital shell at extreme risk!');
+      }
+    }
+
+    // Natural debris decay (very slow, atmospheric drag at LEO)
+    state.orbitalDebrisLevel = Math.max(0, state.orbitalDebrisLevel - 0.00001 * dt);
+
+    // Active debris cleanup if upgraded
+    if (state.config._debrisCleanup && state.orbitalDebrisLevel > 0) {
+      state.orbitalDebrisLevel = Math.max(0, state.orbitalDebrisLevel - 0.0005 * dt);
+    }
+
+    // Random debris hits from elevated debris field
+    const hitChance = state.orbitalDebrisLevel * 0.000001 * dt;
+    if (Math.random() < hitChance) {
+      const shieldReduction = state.config._shieldLevel === 2 ? 0.1 :
+                               state.config._shieldLevel === 1 ? 0.4 : 1.0;
+      if (Math.random() > (state.config._evasion || 0)) {
+        const damage = (5 + Math.random() * 15) * shieldReduction;
+        if (damage > 3) {
+          state.config.radiatorArea *= (1 - damage / 200);
+          state.chipHealth -= damage * 0.3;
+          addLog('error', `DEBRIS STRIKE! Radiator area -${damage.toFixed(1)}%, chip health -${(damage*0.3).toFixed(1)}%`);
+        } else {
+          addLog('warn', 'Minor debris impact - shields absorbed');
+        }
+      } else {
+        addLog('info', 'Debris incoming - evasive maneuver successful!');
+      }
+    }
+
+    // Debris also threatens rivals
+    for (const rival of state.rivals) {
+      if (rival.disabled || rival.health <= 0) continue;
+      if (Math.random() < hitChance * 0.5) {
+        rival.health -= 10 + Math.random() * 20;
+        if (rival.health <= 0) {
+          rival.health = 0;
+          rival.disabled = true;
+          rival.computing = false;
+          addLog('warn', `${rival.name} destroyed by orbital debris`);
+          // Destroyed satellite creates MORE debris
+          state.orbitalDebrisLevel += 5;
+        }
+      }
+    }
+
+    // Kessler endgame
+    if (state.orbitalDebrisLevel >= 100) {
+      triggerGameOver('Kessler Syndrome - Orbital shell rendered unusable by cascading debris. All satellites destroyed.');
+      return;
+    }
+  }
+}
+
+function attackRival(rivalId, weaponType) {
+  const rival = state.rivals.find(r => r.id === rivalId);
+  if (!rival || rival.health <= 0) return;
+  if (state.attackCooldown > 0) {
+    addLog('warn', `Attack systems cooling down (${Math.ceil(state.attackCooldown)}s remaining)`);
+    return;
+  }
+
+  if (weaponType === 'laser' && state.config._weaponType === 'laser') {
+    // Laser dazzle - temporarily disable rival, no debris
+    addLog('warn', `Firing high-power laser at ${rival.name}...`);
+    state.attackCooldown = 3600; // 1 hour cooldown
+    state.retaliationRisk = Math.min(1, state.retaliationRisk + 0.2);
+
+    if (Math.random() < 0.7) { // 70% success
+      rival.disabled = true;
+      rival.computing = false;
+      rival.disabledUntil = state.simTime + 7200 + Math.random() * 14400; // disabled 2-6 hours
+      rival.retaliating = true;
+      rival.retaliationCooldown = state.simTime + 3600;
+      rival.lastAttackedBy = 'player';
+      addLog('success', `${rival.name} sensors blinded! Compute offline for ${((rival.disabledUntil - state.simTime)/3600).toFixed(1)}h`);
+    } else {
+      addLog('error', `Laser attack on ${rival.name} missed - they are alerted!`);
+      rival.retaliating = true;
+      rival.retaliationCooldown = state.simTime + 1800;
+    }
+
+    // Sanctions risk
+    if (Math.random() < 0.3) {
+      state.sanctioned = true;
+      state.sanctionTimer = 86400; // 24 hours
+      addLog('error', 'UN CONDEMNATION - International sanctions imposed! Reduced job income for 24h');
+    }
+
+  } else if (weaponType === 'kinetic' && state.config._kineticAmmo > 0) {
+    // Kinetic interceptor - high damage but creates debris field
+    addLog('error', `Launching kinetic interceptor at ${rival.name}...`);
+    state.config._kineticAmmo--;
+    state.attackCooldown = 7200; // 2 hour cooldown
+    state.retaliationRisk = Math.min(1, state.retaliationRisk + 0.4);
+
+    if (Math.random() < 0.85) { // 85% hit rate
+      const damage = 30 + Math.random() * 40;
+      rival.health -= damage;
+      addLog('success', `KINETIC HIT on ${rival.name}! ${damage.toFixed(0)}% damage`);
+
+      // CRITICAL: Kinetic attack creates massive debris field
+      const debrisCreated = 15 + Math.random() * 25;
+      state.orbitalDebrisLevel += debrisCreated;
+      addLog('error', `DEBRIS CLOUD GENERATED: +${debrisCreated.toFixed(0)} debris level (now: ${state.orbitalDebrisLevel.toFixed(0)}%)`);
+      addLog('error', 'WARNING: Debris threatens ALL satellites in this orbital shell!');
+
+      if (rival.health <= 0) {
+        rival.health = 0;
+        rival.disabled = true;
+        rival.computing = false;
+        state.orbitalDebrisLevel += 10; // destroyed sat = more debris
+        addLog('error', `${rival.name} DESTROYED - satellite breakup creating additional debris!`);
+      } else {
+        rival.retaliating = true;
+        rival.retaliationCooldown = state.simTime + 1800;
+      }
+    } else {
+      addLog('warn', `Kinetic interceptor missed ${rival.name} - still creating debris!`);
+      state.orbitalDebrisLevel += 5; // miss still creates some debris
+    }
+
+    // Guaranteed sanctions for kinetic attack
+    state.sanctioned = true;
+    state.sanctionTimer = 172800; // 48 hours
+    addLog('error', 'EMERGENCY UN SESSION - Severe sanctions imposed for 48h!');
+
+  } else if (weaponType === 'cyber' && state.config._weaponType === 'cyber') {
+    // Cyber attack via laser link - disable compute, no debris
+    addLog('info', `Initiating cyber intrusion on ${rival.name}...`);
+    state.attackCooldown = 5400; // 1.5 hour cooldown
+
+    if (Math.random() < 0.5) { // 50% success - harder than kinetic
+      rival.computing = false;
+      rival.disabledUntil = state.simTime + 14400 + Math.random() * 28800; // 4-12 hours
+      rival.disabled = true;
+      addLog('success', `${rival.name} systems compromised! Compute hijacked for ${((rival.disabledUntil - state.simTime)/3600).toFixed(1)}h`);
+      // Bonus: steal some of their job revenue
+      const stolen = 2000 + Math.random() * 5000;
+      state.credits += stolen;
+      addLog('success', `Siphoned $${Math.floor(stolen)} from ${rival.name}'s compute contracts`);
+      state.retaliationRisk = Math.min(1, state.retaliationRisk + 0.1); // lower risk, stealthy
+    } else {
+      addLog('error', `Cyber attack on ${rival.name} failed - firewall detected intrusion!`);
+      rival.retaliating = true;
+      rival.retaliationCooldown = state.simTime + 3600;
+      state.retaliationRisk = Math.min(1, state.retaliationRisk + 0.3);
+    }
+
+    // Lower sanction risk for cyber
+    if (Math.random() < 0.1) {
+      state.sanctioned = true;
+      state.sanctionTimer = 43200; // 12 hours
+      addLog('warn', 'Cyber attribution detected - sanctions imposed for 12h');
+    }
+
+  } else if (weaponType === 'emp' && state.config._hasEMP) {
+    // EMP - devastating but affects EVERYTHING nearby including yourself
+    addLog('error', 'DETONATING EMP WARHEAD...');
+    state.config._hasEMP = false; // one-time use
+    state.attackCooldown = 86400; // 24h cooldown
+
+    // Damage ALL rivals in range
+    for (const r of state.rivals) {
+      if (r.health <= 0) continue;
+      const angDiff = Math.abs(((r.orbitalAngle - state.orbitalAngle + Math.PI) % (Math.PI * 2)) - Math.PI);
+      if (angDiff < 0.8) { // within range
+        r.health -= 60 + Math.random() * 30;
+        r.disabled = true;
+        r.computing = false;
+        r.disabledUntil = state.simTime + 86400; // 24h
+        addLog('error', `EMP hit ${r.name}: ${r.health > 0 ? r.health.toFixed(0)+'% health' : 'DESTROYED'}`);
+        if (r.health <= 0) {
+          r.health = 0;
+          state.orbitalDebrisLevel += 10;
+        }
+      }
+    }
+
+    // Self-damage - EMP affects your own systems too!
+    state.chipHealth -= 20 + Math.random() * 15;
+    state.config.solarCellEfficiency *= 0.85; // permanent panel damage
+    state.batteryLevel *= 0.3; // battery drain
+    addLog('error', 'EMP SELF-DAMAGE: Chip health -20-35%, solar efficiency -15%, battery drained');
+
+    // Massive debris from destroyed sats
+    state.orbitalDebrisLevel += 20;
+    addLog('error', `Orbital debris level: ${state.orbitalDebrisLevel.toFixed(0)}%`);
+
+    // Maximum sanctions
+    state.sanctioned = true;
+    state.sanctionTimer = 604800; // 7 days
+    state.retaliationRisk = 1.0;
+    addLog('error', 'GLOBAL CONDEMNATION - Maximum sanctions imposed for 7 days!');
+    addLog('error', 'All nations have flagged your satellite for retaliation!');
+  }
+}
+
+function executeRivalAttack(rival) {
+  addLog('error', `${rival.name} is retaliating!`);
+
+  // Rivals use laser attacks (no debris from AI)
+  const evaded = Math.random() < (state.config._evasion || 0);
+  if (evaded) {
+    addLog('info', 'Evasive maneuver - rival attack dodged!');
+    return;
+  }
+
+  const shieldReduction = state.config._shieldLevel >= 1 ? 0.4 : 1.0;
+  const damage = (10 + Math.random() * 20) * shieldReduction;
+
+  // Rival laser dazzle
+  if (Math.random() < 0.6) {
+    state.config.solarCellEfficiency *= (1 - damage / 500);
+    addLog('error', `${rival.name} laser damaged solar panels! Efficiency -${(damage/5).toFixed(1)}%`);
+  } else {
+    state.chipHealth -= damage * 0.5;
+    addLog('error', `${rival.name} attack damaged compute chips! Health -${(damage*0.5).toFixed(1)}%`);
+  }
+}
+
+// ============================================================
+// CONTRABAND CARGO SYSTEM
+// ============================================================
+const CARGO_TYPES = [
+  // Legitimate high-value
+  { name: 'DOD Encrypted Relay', reward: 8000, risk: 0, legal: true, weight: 200,
+    desc: 'Military comms relay. Legal but draws attention.', penalty: 0,
+    effect: () => { addLog('success', 'DOD relay contract completed'); } },
+  { name: 'ESA Science Payload', reward: 4000, risk: 0, legal: true, weight: 150,
+    desc: 'European Space Agency research instruments.',
+    effect: () => { state.chipHealth = Math.min(100, state.chipHealth + 5); addLog('success', 'ESA payload delivered - shared research improved chip diagnostics +5%'); } },
+  // Grey area
+  { name: 'NSA SIGINT Array', reward: 20000, risk: 0.15, legal: false, weight: 300,
+    desc: 'Signals intelligence antenna. High pay, diplomatic risk if detected.',
+    penalty: 15000,
+    effect: () => { addLog('success', 'NSA SIGINT package installed - surveillance data sold'); } },
+  { name: 'Corporate Espionage Node', reward: 15000, risk: 0.25, legal: false, weight: 100,
+    desc: 'Intercept rival corp laser comms. Very risky if caught.',
+    penalty: 20000,
+    effect: () => { state.credits += 5000; addLog('success', 'Intercepted competitor trade secrets (+$5,000 bonus)'); } },
+  // Extremely risky
+  { name: 'Nuclear Material Package', reward: 50000, risk: 0.35, legal: false, weight: 500,
+    desc: 'Undeclared nuclear material. EXTREME penalty if caught. May damage systems.',
+    penalty: 80000,
+    effect: () => {
+      // Nuclear material increases radiation exposure
+      state.totalRadiation += 500;
+      addLog('warn', 'Nuclear package stored - elevated radiation levels (+500 rad)');
+    } },
+  { name: 'Weaponized Satellite Module', reward: 35000, risk: 0.3, legal: false, weight: 400,
+    desc: 'Kinetic kill vehicle components. Treaty violation.',
+    penalty: 60000,
+    effect: () => {
+      if (!state.config._kineticAmmo) state.config._kineticAmmo = 0;
+      state.config._kineticAmmo += 2;
+      state.hasWeapons = true;
+      addLog('success', 'Kinetic interceptors assembled from smuggled parts (+2 ammo)');
+    } },
+  { name: 'Cryptocurrency Mining Rig', reward: 12000, risk: 0.1, legal: false, weight: 200,
+    desc: 'Unauthorized mining hardware. Extra heat, extra power draw.',
+    penalty: 8000,
+    effect: () => {
+      // Permanently adds heat and power draw but generates passive income
+      state.config.systemPower += 500;
+      state.config._miningIncome = (state.config._miningIncome || 0) + 100; // $/hour
+      addLog('warn', 'Mining rig installed - +500W power draw, +$100/hr passive income');
+    } },
+  { name: 'Classified AI Training Data', reward: 25000, risk: 0.2, legal: false, weight: 50,
+    desc: 'Stolen training datasets. Boosts compute jobs but legally toxic.',
+    penalty: 30000,
+    effect: () => {
+      state.config.tflopsPerModule *= 1.15;
+      addLog('success', 'Classified datasets loaded - compute efficiency +15%');
+    } },
+];
+
+let cargoOffers = [];
+let lastCargoOffer = 0;
+let activeCargo = []; // currently carried contraband
+
+function processCargoOffers(dt) {
+  // New cargo offers every 2-4 hours sim time
+  if (state.simTime - lastCargoOffer > 7200 + Math.random() * 7200) {
+    lastCargoOffer = state.simTime;
+    if (cargoOffers.length < 2) {
+      const type = CARGO_TYPES[Math.floor(Math.random() * CARGO_TYPES.length)];
+      const offer = {
+        ...type,
+        id: Date.now() + Math.random(),
+        expires: state.simTime + 3600 + Math.random() * 3600, // 1-2 hour window
+      };
+      cargoOffers.push(offer);
+      if (offer.legal) {
+        addLog('info', `Cargo offer: ${offer.name} ($${offer.reward.toLocaleString()})`);
+      } else {
+        addLog('warn', `BLACK MARKET: ${offer.name} ($${offer.reward.toLocaleString()}) - ILLEGAL`);
+      }
+    }
+  }
+
+  // Expire old offers
+  cargoOffers = cargoOffers.filter(c => state.simTime < c.expires);
+
+  // Check for detection of active contraband
+  for (let i = activeCargo.length - 1; i >= 0; i--) {
+    const cargo = activeCargo[i];
+    if (!cargo.legal) {
+      // Detection chance per hour
+      const detectionChance = cargo.risk * dt / 3600;
+      if (Math.random() < detectionChance) {
+        addLog('error', `DETECTED: ${cargo.name} found by orbital inspection!`);
+        addLog('error', `PENALTY: -$${cargo.penalty.toLocaleString()}`);
+        state.credits -= cargo.penalty;
+        state.sanctioned = true;
+        state.sanctionTimer = Math.max(state.sanctionTimer, 86400);
+        state.retaliationRisk = Math.min(1, state.retaliationRisk + 0.3);
+        activeCargo.splice(i, 1);
+
+        if (state.credits < -50000) {
+          triggerGameOver('Bankrupt from contraband penalties - operations seized');
+          return;
+        }
+      }
+    }
+  }
+
+  // Mining income from crypto rigs
+  if (state.config._miningIncome) {
+    state.credits += state.config._miningIncome * dt / 3600;
+  }
+}
+
+function acceptCargo(offerId) {
+  const idx = cargoOffers.findIndex(c => c.id === offerId);
+  if (idx === -1) return;
+  const cargo = cargoOffers.splice(idx, 1)[0];
+  cargo.effect();
+  state.credits += cargo.reward;
+  state.totalCreditsEarned += cargo.reward;
+  activeCargo.push(cargo);
+  addLog('success', `Accepted cargo: ${cargo.name} (+$${cargo.reward.toLocaleString()})`);
+  if (!cargo.legal) {
+    addLog('warn', `Detection risk: ${(cargo.risk * 100).toFixed(0)}%/hour. Penalty if caught: $${cargo.penalty.toLocaleString()}`);
+  }
+}
+
+function renderCargoOffers() {
+  const el = document.getElementById('cargo-offers');
+  if (!el) return;
+  let html = '';
+  if (cargoOffers.length > 0) {
+    html += '<div style="font-size:10px;color:#4fc3f7;text-transform:uppercase;margin-bottom:4px">Cargo Offers</div>';
+    cargoOffers.forEach(c => {
+      const timeLeft = Math.max(0, c.expires - state.simTime);
+      const borderColor = c.legal ? '#4fc3f7' : '#f44336';
+      html += `<div class="job-card" style="border-color:${borderColor};cursor:pointer" onclick="acceptCargo(${c.id})">
+        <div style="flex:1">
+          <div class="job-name">${c.legal ? '' : '⚠ '}${c.name}</div>
+          <div style="font-size:10px;color:#888">${c.desc}</div>
+          <div style="font-size:10px"><span class="job-reward">+$${c.reward.toLocaleString()}</span>
+          ${c.legal ? '' : `<span style="color:#f44336"> | Risk: ${(c.risk*100).toFixed(0)}%/hr</span>`}
+          <span style="color:#666"> | ${Math.ceil(timeLeft/60)}m left</span></div>
+        </div>
+      </div>`;
+    });
+  }
+  if (activeCargo.filter(c => !c.legal).length > 0) {
+    html += '<div style="font-size:10px;color:#f44336;text-transform:uppercase;margin-top:6px">Active Contraband</div>';
+    activeCargo.filter(c => !c.legal).forEach(c => {
+      html += `<div style="font-size:10px;color:#ff6b35;margin:2px 0">● ${c.name} (${(c.risk*100).toFixed(0)}%/hr detection)</div>`;
+    });
+  }
+  el.innerHTML = html;
+}
+
+// ============================================================
+// COMBAT UI
+// ============================================================
+function renderCombatPanel() {
+  const el = document.getElementById('combat-panel');
+  if (!el) return;
+  if (!state.hasWeapons && state.rivals.length === 0) { el.innerHTML = ''; return; }
+
+  let html = '<div style="font-size:10px;color:#f44336;text-transform:uppercase;margin-bottom:4px">Orbital Rivals</div>';
+
+  // Debris level
+  if (state.orbitalDebrisLevel > 0) {
+    const dColor = state.orbitalDebrisLevel > 60 ? '#f44336' : state.orbitalDebrisLevel > 30 ? '#ff9800' : '#ffd700';
+    html += `<div style="font-size:10px;color:${dColor};margin-bottom:4px">Debris Level: ${state.orbitalDebrisLevel.toFixed(1)}%${state.kesslerCascade ? ' CASCADING!' : ''}</div>`;
+  }
+
+  // Sanctions
+  if (state.sanctioned) {
+    html += `<div style="font-size:10px;color:#ff9800;margin-bottom:4px">SANCTIONED: ${Math.ceil(state.sanctionTimer/3600)}h remaining (50% job income)</div>`;
+  }
+
+  // Rival status
+  state.rivals.forEach(r => {
+    const status = r.health <= 0 ? 'DESTROYED' : r.disabled ? 'DISABLED' : 'ACTIVE';
+    const sColor = r.health <= 0 ? '#555' : r.disabled ? '#ff9800' : r.color;
+    html += `<div class="job-card" style="border-color:${sColor}">
+      <div style="flex:1">
+        <div style="color:${sColor}">${r.name} <span style="color:#888">(${r.nation})</span></div>
+        <div style="font-size:10px;color:#888">Health: ${Math.max(0,r.health).toFixed(0)}% | ${status}</div>
+        ${state.hasWeapons && r.health > 0 && !r.disabled ? `<div style="margin-top:3px">
+          ${state.config._weaponType === 'laser' || state.config._weaponType === 'cyber' ? `<button class="btn" style="display:inline;width:auto;padding:2px 6px;font-size:9px" onclick="attackRival(${r.id},'${state.config._weaponType}')">${state.config._weaponType === 'laser' ? 'LASER' : 'HACK'}</button>` : ''}
+          ${state.config._kineticAmmo > 0 ? `<button class="btn danger" style="display:inline;width:auto;padding:2px 6px;font-size:9px" onclick="attackRival(${r.id},'kinetic')">KINETIC (${state.config._kineticAmmo})</button>` : ''}
+          ${state.config._hasEMP ? `<button class="btn danger" style="display:inline;width:auto;padding:2px 6px;font-size:9px" onclick="attackRival(${r.id},'emp')">EMP ☢</button>` : ''}
+        </div>` : ''}
+      </div>
+    </div>`;
+  });
+
+  if (state.attackCooldown > 0) {
+    html += `<div style="font-size:10px;color:#666;margin-top:4px">Attack cooldown: ${Math.ceil(state.attackCooldown/60)}m</div>`;
+  }
+
+  el.innerHTML = html;
 }
 
 // ============================================================
@@ -1423,6 +1965,84 @@ function drawScene() {
   ctx.font = '9px monospace';
   ctx.fillText('STARLINK RELAY CONSTELLATION', cx + starlinkOrbitRadius * 0.5, cy - starlinkOrbitRadius - 5);
 
+  // Rival datacenter satellites
+  const rivalOrbitRadius = orbitRadius + 8;
+  for (const rival of state.rivals) {
+    const rx = cx + rivalOrbitRadius * Math.cos(rival.orbitalAngle);
+    const ry = cy + rivalOrbitRadius * Math.sin(rival.orbitalAngle);
+
+    if (rival.health <= 0) {
+      // Destroyed - show debris cloud
+      ctx.fillStyle = 'rgba(255,100,0,0.3)';
+      for (let d = 0; d < 4; d++) {
+        const dx = rx + (Math.random() - 0.5) * 10;
+        const dy = ry + (Math.random() - 0.5) * 10;
+        ctx.fillRect(dx, dy, 2, 2);
+      }
+    } else {
+      // Rival satellite marker
+      const alpha = rival.disabled ? 0.3 : 0.7;
+      ctx.fillStyle = rival.color.replace(')', `,${alpha})`).replace('rgb', 'rgba').replace('#', '');
+      // Use hex color with alpha
+      ctx.globalAlpha = alpha;
+      ctx.fillStyle = rival.color;
+      ctx.beginPath();
+      ctx.arc(rx, ry, 4, 0, Math.PI * 2);
+      ctx.fill();
+
+      // Small solar panel lines
+      ctx.strokeStyle = rival.color;
+      ctx.lineWidth = 1;
+      ctx.beginPath();
+      ctx.moveTo(rx - 7, ry);
+      ctx.lineTo(rx + 7, ry);
+      ctx.stroke();
+
+      // Label
+      ctx.fillStyle = rival.color;
+      ctx.font = '8px monospace';
+      ctx.textAlign = 'center';
+      ctx.fillText(rival.name, rx, ry - 8);
+      ctx.textAlign = 'left';
+      ctx.globalAlpha = 1;
+    }
+  }
+
+  // Orbital debris field visualization
+  if (state.orbitalDebrisLevel > 5) {
+    const debrisCount = Math.floor(state.orbitalDebrisLevel / 3);
+    ctx.fillStyle = `rgba(200,200,200,${Math.min(0.4, state.orbitalDebrisLevel / 200)})`;
+    if (!drawScene._debrisParticles) {
+      drawScene._debrisParticles = [];
+      for (let i = 0; i < 60; i++) {
+        drawScene._debrisParticles.push({
+          angle: Math.random() * Math.PI * 2,
+          radius: orbitRadius - 20 + Math.random() * 40,
+          speed: 0.5 + Math.random() * 1.5,
+          size: 0.5 + Math.random() * 1.5,
+        });
+      }
+    }
+    for (let i = 0; i < Math.min(debrisCount, drawScene._debrisParticles.length); i++) {
+      const dp = drawScene._debrisParticles[i];
+      dp.angle += dp.speed * 0.001;
+      const dx = cx + dp.radius * Math.cos(dp.angle);
+      const dy = cy + dp.radius * Math.sin(dp.angle);
+      ctx.fillRect(dx, dy, dp.size, dp.size);
+    }
+
+    // Kessler warning ring
+    if (state.kesslerCascade) {
+      ctx.strokeStyle = `rgba(255,0,0,${0.2 + Math.sin(state.simTime * 2) * 0.15})`;
+      ctx.lineWidth = 3;
+      ctx.setLineDash([4,4]);
+      ctx.beginPath();
+      ctx.arc(cx, cy, orbitRadius, 0, Math.PI * 2);
+      ctx.stroke();
+      ctx.setLineDash([]);
+    }
+  }
+
   // Satellite position
   const satAngle = state.orbitalAngle;
   const satX = cx + orbitRadius * Math.cos(satAngle);
@@ -1495,6 +2115,25 @@ function drawScene() {
     ctx.fillStyle = '#ff9800';
     ctx.font = 'bold 14px monospace';
     ctx.fillText('⚠ DEBRIS WARNING', 10, alertY);
+    alertY += 18;
+  }
+  if (state.orbitalDebrisLevel > 10) {
+    const dColor = state.kesslerCascade ? '#f44336' : '#ff9800';
+    ctx.fillStyle = dColor;
+    ctx.font = 'bold 12px monospace';
+    ctx.fillText(`DEBRIS FIELD: ${state.orbitalDebrisLevel.toFixed(0)}%${state.kesslerCascade ? ' - KESSLER CASCADE!' : ''}`, 10, alertY);
+    alertY += 18;
+  }
+  if (state.sanctioned) {
+    ctx.fillStyle = '#ff9800';
+    ctx.font = 'bold 12px monospace';
+    ctx.fillText(`SANCTIONED - Job income halved (${Math.ceil(state.sanctionTimer/3600)}h)`, 10, alertY);
+    alertY += 18;
+  }
+  if (activeCargo.filter(c => !c.legal).length > 0) {
+    ctx.fillStyle = 'rgba(255,68,68,0.6)';
+    ctx.font = '10px monospace';
+    ctx.fillText(`CONTRABAND ABOARD: ${activeCargo.filter(c => !c.legal).length} illegal cargo(s)`, 10, alertY);
     alertY += 18;
   }
 
@@ -1791,6 +2430,8 @@ function gameLoop(timestamp) {
   drawScene();
   updateUI();
   renderUpgrades();
+  renderCombatPanel();
+  renderCargoOffers();
 
   requestAnimationFrame(gameLoop);
 }
@@ -1817,6 +2458,11 @@ function init() {
   addLog('info', `Radiators: ${state.config.radiatorArea}m² @ ε=${state.config.radiatorEmissivity}`);
   addLog('info', `Compute: ${state.config.computeModules} modules × ${state.config.tflopsPerModule} TFLOPS`);
   addLog('info', 'Systems nominal. Accepting compute jobs.');
+
+  // Initialize rival satellites
+  initRivals();
+  addLog('info', `Detected ${state.rivals.length} rival datacenter satellites in nearby orbits`);
+  state.rivals.forEach(r => addLog('info', `  ● ${r.name} (${r.nation}) - operational`));
 
   // Initial job
   setTimeout(() => spawnJob(), 2000);
