@@ -697,7 +697,6 @@ const INITIAL_CONFIG = {
 let state = {
   // Time
   simTime: 0,              // seconds since launch
-  realTime: 0,
   timeScale: 1,
   paused: false,
   day: 1,
@@ -707,7 +706,6 @@ let state = {
   orbitalPeriod: 0,        // seconds, computed
   inEclipse: false,
   eclipseFraction: 0,
-  sunAngle: 0,             // angle of sun relative to orbital plane
 
   // Solar
   solarGeneration: 0,      // watts currently generated
@@ -760,7 +758,6 @@ let state = {
   // Combat & Rivals
   rivals: [],               // AI rival satellites
   orbitalDebrisLevel: 0,    // 0-100, Kessler syndrome risk
-  debrisFieldDensity: 0,    // debris objects per km³
   shieldHealth: 0,          // 0-100 (0 = no shield)
   hasWeapons: false,
   attackCooldown: 0,        // seconds until next attack available
@@ -805,10 +802,13 @@ function computeEclipseFraction(altitudeKm, betaAngleDeg) {
 }
 
 function isInEclipse(orbitalAngle, eclipseFraction) {
-  // Eclipse occurs around orbital angle π (behind Earth)
+  // Eclipse occurs around orbital angle π (behind Earth, opposite sun)
   const eclipseHalfAngle = eclipseFraction * Math.PI;
-  const angleFromShadow = Math.abs(((orbitalAngle + Math.PI) % (2 * Math.PI)) - Math.PI);
-  return angleFromShadow < eclipseHalfAngle;
+  // Compute angular distance from π (shadow center)
+  let diff = orbitalAngle - Math.PI;
+  // Normalize to [-π, π]
+  diff = ((diff % (2 * Math.PI)) + 3 * Math.PI) % (2 * Math.PI) - Math.PI;
+  return Math.abs(diff) < eclipseHalfAngle;
 }
 
 // ============================================================
@@ -868,8 +868,9 @@ function computeSolarPower(panelArea, efficiency, inSunlight, panelAngleDeg, deg
 
 function computeTotalPowerDraw() {
   const clockFactor = state.clockSpeed / 100;
-  // Power scales super-linearly with clock (voltage scaling: P ∝ V²f ≈ f³ roughly)
-  const overclockFactor = clockFactor <= 1 ? clockFactor : Math.pow(clockFactor, 2.5);
+  // CMOS power: P = C·V²·f. With DVFS, V scales with f, so P ∝ f³ approximately.
+  // Use f^2.5 as a practical compromise (accounts for leakage current floor)
+  const overclockFactor = Math.pow(clockFactor, 2.5);
   const computePower = state.activeModules * state.config.powerPerModule * overclockFactor;
   const systemPower = state.config.systemPower;
   const laserPower = state.uplinkActive ? state.config.laserLinkPower : 0;
@@ -934,16 +935,20 @@ function updateSimulation(dtReal) {
       const chargeRate = Math.min(powerBalance, state.config.batteryMaxCharge);
       state.batteryLevel += (chargeRate * state.config.batteryEfficiency * dt) / 3600;
     } else {
-      // Power deficit → discharge battery
+      // Power deficit → discharge battery (efficiency already applied on charge side)
       const dischargeRate = Math.min(-powerBalance, state.config.batteryMaxDischarge);
-      state.batteryLevel -= (dischargeRate * dt) / (3600 * state.config.batteryEfficiency);
+      state.batteryLevel -= (dischargeRate * dt) / 3600;
     }
   } else if (state.batteryMode === 'charge') {
     const chargeRate = Math.min(Math.max(0, powerBalance), state.config.batteryMaxCharge);
     state.batteryLevel += (chargeRate * state.config.batteryEfficiency * dt) / 3600;
   } else if (state.batteryMode === 'discharge') {
-    const available = Math.min(state.config.batteryMaxDischarge, state.batteryLevel * 3600 / dt);
-    state.batteryLevel -= (Math.min(-powerBalance, available) * dt) / (3600 * state.config.batteryEfficiency);
+    if (powerBalance < 0) {
+      const needed = -powerBalance;
+      const available = dt > 0 ? Math.min(state.config.batteryMaxDischarge, state.batteryLevel * 3600 / dt) : 0;
+      state.batteryLevel -= (Math.min(needed, available) * dt) / 3600;
+    }
+    // If power surplus in discharge mode, excess is wasted (not stored)
   }
 
   state.batteryLevel = Math.max(0, Math.min(state.batteryLevel, state.config.batteryCapacity));
@@ -964,15 +969,16 @@ function updateSimulation(dtReal) {
   }
 
   // --- Heat Generation ---
-  const clockFactor = state.clockSpeed / 100;
-  const overclockFactor = clockFactor <= 1 ? clockFactor : Math.pow(clockFactor, 2.5);
-  const computeHeat = state.activeModules * state.config.powerPerModule * overclockFactor * state.config.heatFractionCompute;
+  // Heat = power consumed (consistent with DVFS power scaling in computeTotalPowerDraw)
+  const computeHeat = powerDraw.computePower * state.config.heatFractionCompute;
   const systemHeat = state.config.systemPower * 0.8; // 80% of system power becomes heat
   const solarAbsorbed = computeSolarHeatInput(state.config.solarPanelArea, !state.inEclipse, effectivePanelAngle);
   const earthIR = computeEarthIRInput(state.config.altitude);
   const albedoHeat = computeAlbedoInput(state.config.altitude, !state.inEclipse);
 
-  state.heatGenerated = computeHeat + systemHeat + solarAbsorbed + earthIR + albedoHeat;
+  // Solar flare adds extra heat input (modeled as heat flux through thermal mass, not direct temp)
+  const flareHeat = state.solarFlareActive ? state.solarFlareIntensity * 5000 : 0; // up to 5kW extra heat
+  state.heatGenerated = computeHeat + systemHeat + solarAbsorbed + earthIR + albedoHeat + flareHeat;
 
   // --- Heat Dissipation ---
   const radiatorDeploy = state.radiatorDeployment / 100;
@@ -994,11 +1000,6 @@ function updateSimulation(dtReal) {
   const netHeat = state.heatGenerated - state.heatRadiated;
   const dTemp = (netHeat * dt) / state.config.thermalMass;
   state.coreTemp += dTemp;
-
-  // Solar flare heating
-  if (state.solarFlareActive) {
-    state.coreTemp += state.solarFlareIntensity * 0.5 * dt;
-  }
 
   // --- Radiation Effects ---
   // Base radiation in LEO: ~0.5 rad/day at 550km with 3mm Al shielding
@@ -1032,7 +1033,7 @@ function updateSimulation(dtReal) {
   state.seuCount += state.seuRate * dt;
 
   // SEU impact: uncorrectable errors occasionally corrupt compute jobs (~1 in 1000 SEUs)
-  if (state.seuRate > 100 && Math.random() < 0.0001 * dt * state.timeScale) {
+  if (state.seuRate > 100 && Math.random() < 0.0001 * dt) {
     const activeJobs = state.jobs.filter(j => j.active);
     if (activeJobs.length > 0) {
       const job = activeJobs[Math.floor(Math.random() * activeJobs.length)];
@@ -1080,15 +1081,7 @@ function updateSimulation(dtReal) {
   // --- Contraband Cargo ---
   processCargoOffers(dt);
 
-  // --- Sanctions effect on income ---
-  if (state.sanctioned) {
-    // Sanctions halve job rewards
-    for (const job of state.jobs) {
-      if (job.active && job.progress >= 1) {
-        job.reward = Math.floor(job.reward * 0.5);
-      }
-    }
-  }
+  // Sanctions effect is applied at job payout in processJobs()
 }
 
 // ============================================================
@@ -1110,7 +1103,7 @@ function spawnJob() {
   const type = JOB_TYPES[Math.floor(Math.random() * JOB_TYPES.length)];
   const job = {
     ...type,
-    id: Date.now() + Math.random(),
+    id: 'job_' + Date.now() + '_' + Math.floor(Math.random() * 100000),
     progress: 0,        // 0-1
     tflopsAllocated: 0,
     active: true,
@@ -1134,29 +1127,32 @@ function processJobs(dt) {
     if (job.progress >= 1) {
       job.progress = 1;
       job.active = false;
-      state.credits += job.reward;
-      state.totalCreditsEarned += job.reward;
+      const effectiveReward = state.sanctioned ? Math.floor(job.reward * 0.5) : job.reward;
+      state.credits += effectiveReward;
+      state.totalCreditsEarned += effectiveReward;
       state.completedJobs++;
-      addLog('success', `Job complete: ${job.name} (+$${job.reward})`);
+      addLog('success', `Job complete: ${job.name} (+$${effectiveReward})${state.sanctioned ? ' [SANCTIONED: 50% penalty]' : ''}`);
     }
   }
 
-  // Remove completed jobs after a delay
-  state.jobs = state.jobs.filter(j => j.active || j.progress < 1.1);
+  // Remove completed jobs
+  state.jobs = state.jobs.filter(j => j.active);
 }
 
 // ============================================================
 // EVENTS SYSTEM
 // ============================================================
 let lastJobSpawn = 0;
+let nextJobInterval = 1800 + Math.random() * 3600;
 let lastSolarFlareCheck = 0;
 let lastDebrisCheck = 0;
 
 function processEvents(dt) {
   // Spawn jobs periodically
-  if (state.simTime - lastJobSpawn > 1800 + Math.random() * 3600) {
+  if (state.simTime - lastJobSpawn > nextJobInterval) {
     spawnJob();
     lastJobSpawn = state.simTime;
+    nextJobInterval = 1800 + Math.random() * 3600;
   }
 
   // Solar flare events (random, ~once per 30 days average)
@@ -1248,11 +1244,11 @@ const UPGRADES = [
   { id: 'maneuver1', name: 'Evasive Thruster Pack', cost: 18000, desc: 'Auto-dodge 40% of attacks, uses propellant',
     apply: (c) => { c._evasion = 0.4; }, owned: false },
   { id: 'laser1', name: 'High-Power Laser System', cost: 30000, desc: 'Dazzle/blind rival sensors (1.5kW draw)',
-    apply: (c) => { state.hasWeapons = true; c._weaponType = 'laser'; c._weaponPower = 1500; }, owned: false },
+    apply: (c) => { state.hasWeapons = true; c._hasLaser = true; c._weaponPower = 1500; }, owned: false },
   { id: 'kinetic1', name: 'Kinetic Interceptor Bay', cost: 50000, desc: 'Launch projectiles. WARNING: Creates debris!',
-    apply: (c) => { state.hasWeapons = true; c._weaponType = 'kinetic'; c._kineticAmmo = 3; }, owned: false },
+    apply: (c) => { state.hasWeapons = true; c._hasKinetic = true; c._kineticAmmo = 3; }, owned: false },
   { id: 'cyber1', name: 'Cyber Warfare Suite', cost: 35000, desc: 'Hack rivals via laser link. Disable their compute.',
-    apply: (c) => { state.hasWeapons = true; c._weaponType = 'cyber'; }, owned: false },
+    apply: (c) => { state.hasWeapons = true; c._hasCyber = true; }, owned: false },
   { id: 'shield2', name: 'Active Debris Defense', cost: 40000, desc: 'Laser broom vaporizes small debris nearby',
     apply: (c) => { c._shieldLevel = 2; c._debrisCleanup = true; }, owned: false },
   { id: 'emp1', name: 'EMP Warhead', cost: 75000, desc: 'Disable all electronics in 50km. CATASTROPHIC risk.',
@@ -1407,7 +1403,7 @@ function attackRival(rivalId, weaponType) {
     return;
   }
 
-  if (weaponType === 'laser' && state.config._weaponType === 'laser') {
+  if (weaponType === 'laser' && state.config._hasLaser) {
     // Laser dazzle - temporarily disable rival, no debris
     addLog('warn', `Firing high-power laser at ${rival.name}...`);
     state.attackCooldown = 3600; // 1 hour cooldown
@@ -1472,7 +1468,7 @@ function attackRival(rivalId, weaponType) {
     state.sanctionTimer = 172800; // 48 hours
     addLog('error', 'EMERGENCY UN SESSION - Severe sanctions imposed for 48h!');
 
-  } else if (weaponType === 'cyber' && state.config._weaponType === 'cyber') {
+  } else if (weaponType === 'cyber' && state.config._hasCyber) {
     // Cyber attack via laser link - disable compute, no debris
     addLog('info', `Initiating cyber intrusion on ${rival.name}...`);
     state.attackCooldown = 5400; // 1.5 hour cooldown
@@ -1510,7 +1506,8 @@ function attackRival(rivalId, weaponType) {
     // Damage ALL rivals in range
     for (const r of state.rivals) {
       if (r.health <= 0) continue;
-      const angDiff = Math.abs(((r.orbitalAngle - state.orbitalAngle + Math.PI) % (Math.PI * 2)) - Math.PI);
+      const rawDiff = r.orbitalAngle - state.orbitalAngle;
+      const angDiff = Math.abs(((rawDiff % (Math.PI * 2)) + Math.PI * 2) % (Math.PI * 2) - Math.PI);
       if (angDiff < 0.8) { // within range
         r.health -= 60 + Math.random() * 30;
         r.disabled = true;
@@ -1624,17 +1621,19 @@ const CARGO_TYPES = [
 
 let cargoOffers = [];
 let lastCargoOffer = 0;
+let nextCargoInterval = 7200 + Math.random() * 7200;
 let activeCargo = []; // currently carried contraband
 
 function processCargoOffers(dt) {
   // New cargo offers every 2-4 hours sim time
-  if (state.simTime - lastCargoOffer > 7200 + Math.random() * 7200) {
+  if (state.simTime - lastCargoOffer > nextCargoInterval) {
     lastCargoOffer = state.simTime;
+    nextCargoInterval = 7200 + Math.random() * 7200;
     if (cargoOffers.length < 2) {
       const type = CARGO_TYPES[Math.floor(Math.random() * CARGO_TYPES.length)];
       const offer = {
         ...type,
-        id: Date.now() + Math.random(),
+        id: 'cargo_' + Date.now() + '_' + Math.floor(Math.random() * 100000),
         expires: state.simTime + 3600 + Math.random() * 3600, // 1-2 hour window
       };
       cargoOffers.push(offer);
@@ -1685,7 +1684,9 @@ function acceptCargo(offerId) {
   cargo.effect();
   state.credits += cargo.reward;
   state.totalCreditsEarned += cargo.reward;
-  activeCargo.push(cargo);
+  if (!cargo.legal) {
+    activeCargo.push(cargo); // only track illegal cargo for detection
+  }
   addLog('success', `Accepted cargo: ${cargo.name} (+$${cargo.reward.toLocaleString()})`);
   if (!cargo.legal) {
     addLog('warn', `Detection risk: ${(cargo.risk * 100).toFixed(0)}%/hour. Penalty if caught: $${cargo.penalty.toLocaleString()}`);
@@ -1706,7 +1707,7 @@ function renderCargoOffers() {
     cargoOffers.forEach(c => {
       const timeLeft = Math.max(0, c.expires - state.simTime);
       const borderColor = c.legal ? '#4fc3f7' : '#f44336';
-      html += `<div class="job-card" style="border-color:${borderColor};cursor:pointer" onclick="acceptCargo(${c.id})">
+      html += `<div class="job-card" style="border-color:${borderColor};cursor:pointer" onclick="acceptCargo('${c.id}')">
         <div style="flex:1">
           <div class="job-name">${c.legal ? '' : '⚠ '}${c.name}</div>
           <div style="font-size:10px;color:#888">${c.desc}</div>
@@ -1762,7 +1763,8 @@ function renderCombatPanel() {
         <div style="color:${sColor}">${r.name} <span style="color:#888">(${r.nation})</span></div>
         <div style="font-size:10px;color:#888">Health: ${Math.max(0,r.health).toFixed(0)}% | ${status}</div>
         ${state.hasWeapons && r.health > 0 && !r.disabled ? `<div style="margin-top:3px">
-          ${state.config._weaponType === 'laser' || state.config._weaponType === 'cyber' ? `<button class="btn" style="display:inline;width:auto;padding:2px 6px;font-size:9px" onclick="attackRival(${r.id},'${state.config._weaponType}')">${state.config._weaponType === 'laser' ? 'LASER' : 'HACK'}</button>` : ''}
+          ${state.config._hasLaser ? `<button class="btn" style="display:inline;width:auto;padding:2px 6px;font-size:9px" onclick="attackRival(${r.id},'laser')">LASER</button>` : ''}
+          ${state.config._hasCyber ? `<button class="btn" style="display:inline;width:auto;padding:2px 6px;font-size:9px" onclick="attackRival(${r.id},'cyber')">HACK</button>` : ''}
           ${state.config._kineticAmmo > 0 ? `<button class="btn danger" style="display:inline;width:auto;padding:2px 6px;font-size:9px" onclick="attackRival(${r.id},'kinetic')">KINETIC (${state.config._kineticAmmo})</button>` : ''}
           ${state.config._hasEMP ? `<button class="btn danger" style="display:inline;width:auto;padding:2px 6px;font-size:9px" onclick="attackRival(${r.id},'emp')">EMP ☢</button>` : ''}
         </div>` : ''}
@@ -1825,7 +1827,7 @@ function resizeCanvas() {
   canvas.height = rect.height * window.devicePixelRatio;
   canvas.style.width = rect.width + 'px';
   canvas.style.height = rect.height + 'px';
-  ctx.scale(window.devicePixelRatio, window.devicePixelRatio);
+  ctx.setTransform(window.devicePixelRatio, 0, 0, window.devicePixelRatio, 0, 0);
 }
 
 function drawScene() {
@@ -1950,7 +1952,8 @@ function drawScene() {
   ctx.setLineDash([]);
 
   // Draw individual Starlink sats
-  const starlinkDrift = state.simTime * 2 * Math.PI / (computeOrbitalPeriod(550) || 5730);
+  if (!drawScene._starlinkPeriod) drawScene._starlinkPeriod = computeOrbitalPeriod(550);
+  const starlinkDrift = state.simTime * 2 * Math.PI / drawScene._starlinkPeriod;
   for (let i = 0; i < drawScene._starlinkAngles.length; i++) {
     const slAngle = (drawScene._starlinkAngles[i] + starlinkDrift) % (Math.PI * 2);
     const slX = cx + starlinkOrbitRadius * Math.cos(slAngle);
@@ -1984,6 +1987,7 @@ function drawScene() {
 
     if (rival.health <= 0) {
       // Destroyed - show debris cloud
+      ctx.globalAlpha = 1;
       ctx.fillStyle = 'rgba(255,100,0,0.3)';
       for (let d = 0; d < 4; d++) {
         const dx = rx + (Math.random() - 0.5) * 10;
@@ -1993,8 +1997,6 @@ function drawScene() {
     } else {
       // Rival satellite marker
       const alpha = rival.disabled ? 0.3 : 0.7;
-      ctx.fillStyle = rival.color.replace(')', `,${alpha})`).replace('rgb', 'rgba').replace('#', '');
-      // Use hex color with alpha
       ctx.globalAlpha = alpha;
       ctx.fillStyle = rival.color;
       ctx.beginPath();
@@ -2018,6 +2020,7 @@ function drawScene() {
       ctx.globalAlpha = 1;
     }
   }
+  ctx.globalAlpha = 1; // ensure reset after rival loop
 
   // Orbital debris field visualization
   if (state.orbitalDebrisLevel > 5) {
