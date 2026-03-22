@@ -557,6 +557,17 @@ input[type="range"]::-webkit-slider-thumb {
         <label>Data relay via Starlink constellation</label>
       </div>
     </div>
+
+    <div class="panel-section">
+      <div class="panel-title">Repairs & Maintenance</div>
+      <button class="btn" id="btn-repair-chips" onclick="repairSystem('chips')">Repair Chips ($2,000)</button>
+      <button class="btn" id="btn-repair-radiators" onclick="repairSystem('radiators')">Repair Radiators ($3,000)</button>
+      <button class="btn" id="btn-repair-shield" onclick="repairSystem('shield')">Recharge Shield ($1,500)</button>
+      <button class="btn" id="btn-repair-panels" onclick="repairSystem('panels')">De-rad Solar Panels ($4,000)</button>
+      <div class="control-row" style="font-size:10px; color:#666;">
+        <label>Spend credits to restore damaged systems</label>
+      </div>
+    </div>
   </div>
 
   <!-- Main Viewport -->
@@ -1175,7 +1186,9 @@ function updateSimulation(dtReal) {
       state.batteryLevel += (chargeRate * state.config.batteryEfficiency * dt) / 3600;
     } else {
       // Power deficit → discharge battery (efficiency already applied on charge side)
-      const dischargeRate = Math.min(-powerBalance, state.config.batteryMaxDischarge);
+      // Cap discharge at actual energy remaining to prevent "free" power
+      const maxFromBattery = state.batteryLevel * 3600 / Math.max(dt, 0.001);
+      const dischargeRate = Math.min(-powerBalance, state.config.batteryMaxDischarge, maxFromBattery);
       state.batteryLevel -= (dischargeRate * dt) / 3600;
     }
   } else if (state.batteryMode === 'charge') {
@@ -1633,6 +1646,8 @@ const TECH_TREE = {
       apply: (c) => { c._hasGrapple = true; } },
     { id: 'mil_t3_xray', tier: 3, name: 'X-Ray Laser Prototype', cost: 25000, desc: 'Nuclear-pumped, one-shot cone kill. EMP backlash.', requires: ['mil_t2_asat'], branch: 'military',
       apply: (c) => { c._hasEMP = true; } },
+    { id: 'mil_t3_cyber', tier: 3, name: 'Cyber Warfare Suite', cost: 14000, desc: 'Hack rivals via laser link. Siphon FLOPS. Disable compute.', requires: ['mil_t2_dazzle'], branch: 'military',
+      apply: (c) => { state.hasWeapons = true; c._hasCyber = true; } },
     { id: 'mil_t3_hardened', tier: 3, name: 'Hardened Satellites', cost: 12000, desc: 'Rad shielding + maneuver fuel', requires: ['mil_t2_dazzle'], branch: 'military',
       apply: (c) => { c._radHard = true; c._evasion = 0.4; c._shieldLevel = 1; state.shieldHealth = 100; } },
     { id: 'mil_t4_battlestation', tier: 4, name: 'Battle Station', cost: 40000, desc: 'Armed data center with point defense + mega laser', requires: ['mil_t3_grapple', 'mil_t3_hardened'], branch: 'military',
@@ -1705,6 +1720,44 @@ function areRequirementsMet(upgrade) {
     const req = UPGRADES.find(u => u.id === reqId);
     return req && req.owned;
   });
+}
+
+function repairSystem(type) {
+  const costs = { chips: 2000, radiators: 3000, shield: 1500, panels: 4000 };
+  const cost = costs[type];
+  if (!cost || state.credits < cost) {
+    addLog('warn', `Insufficient credits for repair ($${cost} needed)`);
+    return;
+  }
+  switch(type) {
+    case 'chips':
+      if (state.chipHealth >= 99) { addLog('info', 'Chips already at full health'); return; }
+      state.credits -= cost;
+      state.chipHealth = Math.min(100, state.chipHealth + 25);
+      addLog('success', `Chip repair complete: health now ${state.chipHealth.toFixed(0)}% (-$${cost})`);
+      break;
+    case 'radiators':
+      const maxRad = INITIAL_CONFIG.radiatorArea + 110; // base + max upgrades
+      if (state.config.radiatorArea >= maxRad * 0.95) { addLog('info', 'Radiators already near full capacity'); return; }
+      state.credits -= cost;
+      state.config.radiatorArea = Math.min(maxRad, state.config.radiatorArea * 1.15 + 5);
+      addLog('success', `Radiator repair complete: ${state.config.radiatorArea.toFixed(0)}m² (-$${cost})`);
+      break;
+    case 'shield':
+      if (!state.config._shieldLevel) { addLog('warn', 'No shield installed - purchase Whipple Shield first'); return; }
+      if (state.shieldHealth >= 99) { addLog('info', 'Shield already at full charge'); return; }
+      state.credits -= cost;
+      state.shieldHealth = Math.min(100, state.shieldHealth + 40);
+      addLog('success', `Shield recharged: ${state.shieldHealth.toFixed(0)}% (-$${cost})`);
+      break;
+    case 'panels':
+      if (state.panelDegradation <= 0.005) { addLog('info', 'Solar panels already pristine'); return; }
+      state.credits -= cost;
+      state.panelDegradation = Math.max(0, state.panelDegradation - 0.05);
+      addLog('success', `Panel decontamination: degradation reduced to ${(state.panelDegradation*100).toFixed(1)}% (-$${cost})`);
+      break;
+  }
+  SoundEngine.play('upgrade');
 }
 
 function purchaseUpgrade(id) {
@@ -1887,17 +1940,23 @@ function processRivals(dt) {
     // Random debris hits from elevated debris field
     const hitChance = state.orbitalDebrisLevel * 0.000001 * dt;
     if (Math.random() < hitChance) {
-      const shieldReduction = state.config._shieldLevel === 2 ? 0.1 :
-                               state.config._shieldLevel === 1 ? 0.4 : 1.0;
+      const shieldActive = state.shieldHealth > 0 && state.config._shieldLevel >= 1;
+      const shieldReduction = state.config._shieldLevel === 2 && shieldActive ? 0.1 :
+                               state.config._shieldLevel === 1 && shieldActive ? 0.4 : 1.0;
       if (Math.random() > (state.config._evasion || 0)) {
         const damage = (5 + Math.random() * 15) * shieldReduction;
+        // Shield absorbs hits but degrades
+        if (shieldActive) {
+          state.shieldHealth = Math.max(0, state.shieldHealth - damage * 2);
+          if (state.shieldHealth <= 0) addLog('error', 'SHIELD DEPLETED! No more debris protection');
+        }
         if (damage > 3) {
           state.config.radiatorArea *= (1 - damage / 200);
           state.chipHealth -= damage * 0.3;
           SoundEngine.play('explosion');
-          addLog('error', `DEBRIS STRIKE! Radiator area -${damage.toFixed(1)}%, chip health -${(damage*0.3).toFixed(1)}%`);
+          addLog('error', `DEBRIS STRIKE! Radiator -${damage.toFixed(1)}%, chips -${(damage*0.3).toFixed(1)}%${shieldActive ? `, shield ${state.shieldHealth.toFixed(0)}%` : ''}`);
         } else {
-          addLog('warn', 'Minor debris impact - shields absorbed');
+          addLog('warn', `Minor debris impact - ${shieldActive ? 'shields absorbed' : 'glancing blow'}`);
         }
       } else {
         addLog('info', 'Debris incoming - evasive maneuver successful!');
@@ -2160,8 +2219,12 @@ function executeRivalAttack(rival) {
     return;
   }
 
-  const shieldReduction = state.config._shieldLevel >= 1 ? 0.4 : 1.0;
+  const shieldActive = state.shieldHealth > 0 && state.config._shieldLevel >= 1;
+  const shieldReduction = shieldActive ? 0.4 : 1.0;
   const damage = (10 + Math.random() * 20) * shieldReduction;
+  if (shieldActive) {
+    state.shieldHealth = Math.max(0, state.shieldHealth - damage * 3);
+  }
 
   // Rival laser dazzle
   if (Math.random() < 0.6) {
@@ -2397,11 +2460,13 @@ function renderCargoOffers() {
 function checkVictoryConditions() {
   if (state.gameOver || state.victoryAchieved) return;
 
-  // Compute Hegemony (Corporate win): accumulate $500,000 total credits earned
-  if (state.totalCreditsEarned >= 500000) {
-    triggerVictory('Compute Hegemony', 'CORPORATE DOMINANCE',
-      'Your orbital datacenter empire has accumulated $500,000 in total revenue. You control the orbital compute market.',
-      '#4488ff');
+  // Check secret ending FIRST (highest threshold, must not be preempted)
+  // Mars Exodus (Secret): accumulate $1,000,000 AND own tier 5 in any branch
+  const hasTier5 = UPGRADES.some(u => u.tier === 5 && u.owned);
+  if (state.totalCreditsEarned >= 1000000 && hasTier5) {
+    triggerVictory('Mars Exodus', 'SECRET ENDING',
+      'Your fleet breaks Earth orbit. As debris clouds choke the skies below, your constellation of compute power heads for Mars. The future of intelligence lies beyond Earth.',
+      '#ffd700');
     return;
   }
 
@@ -2414,20 +2479,19 @@ function checkVictoryConditions() {
     return;
   }
 
-  // Kessler Reset (Green/Chaos win): have a moon base AND debris level > 80%
-  if (state.config._moonBase && state.orbitalDebrisLevel > 80) {
+  // Kessler Reset (Green/Chaos win): requires green_t5 capstone + moon base + debris > 80%
+  if (state.config._kesslerMonopoly && state.config._moonBase && state.orbitalDebrisLevel > 80) {
     triggerVictory('Kessler Reset', 'PLANNED CHAOS',
-      'With your protected lunar base, you triggered a Kessler cascade that wiped out all competition. Only you survived.',
+      'With your Post-Kessler Monopoly tech and protected lunar base, you triggered a cascade that wiped out all competition. Only you survived.',
       '#44ff44');
     return;
   }
 
-  // Mars Exodus (Secret): accumulate $1,000,000 AND own tier 5 in any branch
-  const hasTier5 = UPGRADES.some(u => u.tier === 5 && u.owned);
-  if (state.totalCreditsEarned >= 1000000 && hasTier5) {
-    triggerVictory('Mars Exodus', 'SECRET ENDING',
-      'Your fleet breaks Earth orbit. As debris clouds choke the skies below, your constellation of compute power heads for Mars. The future of intelligence lies beyond Earth.',
-      '#ffd700');
+  // Compute Hegemony (Corporate win): requires corp_t5 capstone OR $500k without tier 5
+  if (state.config._computeMonopoly || (state.totalCreditsEarned >= 500000 && !hasTier5)) {
+    triggerVictory('Compute Hegemony', 'CORPORATE DOMINANCE',
+      'Your orbital datacenter empire dominates the global compute market. All AI flows through your constellation.',
+      '#4488ff');
     return;
   }
 }
@@ -3734,6 +3798,9 @@ function saveGame() {
       marketDemand: state.marketDemand,
       solarFlareActive: state.solarFlareActive,
       solarFlareIntensity: state.solarFlareIntensity,
+      _flareEndTime: state._flareEndTime || 0,
+      _debrisEndTime: state._debrisEndTime || 0,
+      debrisWarning: state.debrisWarning,
       radiatorTemp: state.radiatorTemp,
       config: { ...state.config },
       ownedUpgrades: UPGRADES.filter(u => u.owned).map(u => u.id),
@@ -3814,7 +3881,14 @@ function loadGame() {
     state.marketDemand = saveData.marketDemand || 1.0;
     state.solarFlareActive = saveData.solarFlareActive || false;
     state.solarFlareIntensity = saveData.solarFlareIntensity || 0;
+    state._flareEndTime = saveData._flareEndTime || 0;
+    state._debrisEndTime = saveData._debrisEndTime || 0;
+    state.debrisWarning = saveData.debrisWarning || false;
     state.radiatorTemp = saveData.radiatorTemp || 290;
+    // If flare is active but no end time, set a reasonable one
+    if (state.solarFlareActive && !state._flareEndTime) {
+      state._flareEndTime = state.simTime + 3600; // 1 hour from now
+    }
 
     if (saveData.config) {
       state.config = saveData.config;
