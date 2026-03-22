@@ -2177,14 +2177,14 @@ function executeRivalAttack(rival) {
 // CONTRABAND CARGO SYSTEM
 // ============================================================
 const CARGO_TYPES = [
-  // Legitimate high-value
+  // Legitimate high-value (green border, safe)
   { name: 'DOD Encrypted Relay', reward: 8000, risk: 0, legal: true, weight: 200,
-    desc: 'Military comms relay. Legal but draws attention.', penalty: 0,
+    desc: 'Military comms relay. Legal government contract.', penalty: 0,
     effect: () => { addLog('success', 'DOD relay contract completed'); } },
   { name: 'ESA Science Payload', reward: 4000, risk: 0, legal: true, weight: 150,
-    desc: 'European Space Agency research instruments.',
+    desc: 'European Space Agency research instruments. +5% chip health.',
     effect: () => { state.chipHealth = Math.min(100, state.chipHealth + 5); addLog('success', 'ESA payload delivered - shared research improved chip diagnostics +5%'); } },
-  // Grey area
+  // ILLEGAL - all have red border and ⚠ icon
   { name: 'NSA SIGINT Array', reward: 20000, risk: 0.15, legal: false, weight: 300,
     desc: 'Signals intelligence antenna. High pay, diplomatic risk if detected.',
     penalty: 15000,
@@ -2369,13 +2369,14 @@ function renderCargoOffers() {
     html += '<div style="font-size:10px;color:#4fc3f7;text-transform:uppercase;margin-bottom:4px">Cargo Offers</div>';
     cargoOffers.forEach(c => {
       const timeLeft = Math.max(0, c.expires - state.simTime);
-      const borderColor = c.isTreaty ? '#ffd700' : c.isTourism ? '#ff69b4' : c.legal ? '#4fc3f7' : '#f44336';
-      html += `<div class="job-card" style="border-color:${borderColor};cursor:pointer" onclick="acceptCargo('${c.id}')" title="${c.isTreaty ? 'Click to COMPLY with treaty' : c.isTourism ? 'Click to accept tourist' : 'Click to accept cargo'}">
+      const borderColor = c.isTreaty ? '#ffd700' : c.isTourism ? '#ff69b4' : c.legal ? '#66bb6a' : '#f44336';
+      const bgColor = !c.legal ? 'rgba(244,67,54,0.08)' : c.isTreaty ? 'rgba(255,215,0,0.08)' : 'transparent';
+      html += `<div class="job-card" style="border-color:${borderColor};background:${bgColor};cursor:pointer" onclick="acceptCargo('${c.id}')" title="${c.isTreaty ? 'Click to COMPLY with treaty' : c.isTourism ? 'Click to accept tourist' : c.legal ? 'Click to accept (safe)' : 'ILLEGAL - Click to accept (risky!)'}">
         <div style="flex:1">
-          <div class="job-name">${c.isTreaty ? '⚖ ' : c.isTourism ? '🚀 ' : c.legal ? '' : '⚠ '}${c.name}</div>
+          <div class="job-name">${c.isTreaty ? '⚖ ' : c.isTourism ? '🚀 ' : c.legal ? '✓ ' : '⚠ ILLEGAL: '}${c.name}</div>
           <div style="font-size:10px;color:#888">${c.desc}</div>
           <div style="font-size:10px"><span class="job-reward">+$${c.reward.toLocaleString()}</span>
-          ${c.legal ? '' : `<span style="color:#f44336"> | Risk: ${(c.risk*100).toFixed(0)}%/hr</span>`}
+          ${!c.legal ? `<span style="color:#f44336;font-weight:bold"> | RISK: ${(c.risk*100).toFixed(0)}%/hr | PENALTY: $${(c.penalty||0).toLocaleString()}</span>` : ''}
           <span style="color:#666"> | ${Math.ceil(timeLeft/60)}m left</span></div>
         </div>
       </div>`;
