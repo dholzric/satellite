@@ -2070,6 +2070,7 @@ function attackRival(rivalId, weaponType) {
         addLog('error', `EMP hit ${r.name}: ${r.health > 0 ? r.health.toFixed(0)+'% health' : 'DESTROYED'}`);
         if (r.health <= 0) {
           r.health = 0;
+          r.destroyedAt = r.destroyedAt || state.simTime;
           state.orbitalDebrisLevel += 10;
         }
       }
@@ -2864,13 +2865,50 @@ function drawScene() {
     const ry = cy + rivalOrbitRadius * Math.sin(rival.orbitalAngle);
 
     if (rival.health <= 0) {
-      // Destroyed - show debris cloud
-      ctx.globalAlpha = 1;
-      ctx.fillStyle = 'rgba(255,100,0,0.3)';
-      for (let d = 0; d < 4; d++) {
-        const dx = rx + (Math.random() - 0.5) * 10;
-        const dy = ry + (Math.random() - 0.5) * 10;
-        ctx.fillRect(dx, dy, 2, 2);
+      // Re-entry animation: fiery trail for 30 seconds of sim time after destruction
+      const timeSinceDestroyed = rival.destroyedAt ? (state.simTime - rival.destroyedAt) : 9999;
+      if (timeSinceDestroyed < 30) {
+        // Draw fiery re-entry streaks
+        const reentryProgress = timeSinceDestroyed / 30; // 0 to 1
+        const trailLength = 30 * (1 - reentryProgress);
+        const trailAngle = rival.orbitalAngle + Math.PI; // trail behind the direction of travel
+        ctx.globalAlpha = 1;
+        for (let s = 0; s < 5; s++) {
+          const streakOffset = (s - 2) * 3;
+          const sx1 = rx + streakOffset * 0.3;
+          const sy1 = ry + streakOffset * 0.5;
+          const sx2 = sx1 + Math.cos(trailAngle) * trailLength * (0.6 + Math.random() * 0.4);
+          const sy2 = sy1 + Math.sin(trailAngle) * trailLength * (0.6 + Math.random() * 0.4);
+          const streakGrad = ctx.createLinearGradient(sx1, sy1, sx2, sy2);
+          streakGrad.addColorStop(0, `rgba(255,255,255,${0.8 * (1 - reentryProgress)})`);
+          streakGrad.addColorStop(0.3, `rgba(255,200,50,${0.7 * (1 - reentryProgress)})`);
+          streakGrad.addColorStop(0.7, `rgba(255,80,0,${0.5 * (1 - reentryProgress)})`);
+          streakGrad.addColorStop(1, 'rgba(255,0,0,0)');
+          ctx.strokeStyle = streakGrad;
+          ctx.lineWidth = 2 - s * 0.3;
+          ctx.beginPath();
+          ctx.moveTo(sx1, sy1);
+          ctx.lineTo(sx2, sy2);
+          ctx.stroke();
+        }
+        // Bright core
+        const coreGlow = ctx.createRadialGradient(rx, ry, 0, rx, ry, 8 * (1 - reentryProgress));
+        coreGlow.addColorStop(0, `rgba(255,255,200,${0.9 * (1 - reentryProgress)})`);
+        coreGlow.addColorStop(0.5, `rgba(255,150,0,${0.5 * (1 - reentryProgress)})`);
+        coreGlow.addColorStop(1, 'rgba(255,50,0,0)');
+        ctx.fillStyle = coreGlow;
+        ctx.beginPath();
+        ctx.arc(rx, ry, 8 * (1 - reentryProgress), 0, Math.PI * 2);
+        ctx.fill();
+      } else {
+        // After animation: debris particles
+        ctx.globalAlpha = 1;
+        ctx.fillStyle = 'rgba(255,100,0,0.3)';
+        for (let d = 0; d < 4; d++) {
+          const dx = rx + (Math.random() - 0.5) * 10;
+          const dy = ry + (Math.random() - 0.5) * 10;
+          ctx.fillRect(dx, dy, 2, 2);
+        }
       }
     } else {
       // Rival satellite marker
