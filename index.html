@@ -507,7 +507,8 @@ input[type="range"]::-webkit-slider-thumb {
         <span class="value" id="val-sat-gen">v1</span>
       </div>
       <button class="btn" id="btn-launch-f9" onclick="scheduleLaunch('falcon9')">Launch Falcon 9 (23 sats, $15K)</button>
-      <button class="btn" id="btn-launch-ss" onclick="scheduleLaunch('starship')" style="opacity:0.4" disabled>Launch Starship (60 sats, $25K)</button>
+      <button class="btn" id="btn-launch-ss" onclick="scheduleLaunch('starship')" style="opacity:0.4" disabled>Launch Starship (55 sats, $30K)</button>
+      <div id="constellation-milestone" style="font-size:10px;color:#555;margin-top:4px;padding:4px;border:1px solid #1e3a5f;border-radius:3px"></div>
       <div class="control-row">
         <label>Fleet Power</label>
         <span class="value" id="val-fleet-power">100%</span>
@@ -969,7 +970,7 @@ let state = {
   },
   launchVehicles: {
     falcon9: { available: true, satsPerLaunch: 23, cost: 15000, successRate: 0.98, cooldownDays: 3 },
-    starship: { available: false, satsPerLaunch: 60, cost: 25000, successRate: 0.92, cooldownDays: 1 },
+    starship: { available: false, satsPerLaunch: 55, cost: 30000, successRate: 0.92, cooldownDays: 1 },
   },
   lastLaunchTime: 0,
   fleetPower: 100,           // percentage of fleet active (0-100)
@@ -1511,11 +1512,15 @@ function processLaunches(dt) {
       // Resolve launch
       const roll = Math.random();
       if (roll < launch.successRate) {
-        // Full success
-        state.constellation.totalSats += launch.satsCount;
-        state.constellation.activeSats += launch.satsCount;
+        // Full success — but 4% DOA rate (dead on arrival, real Starlink figure)
+        const doaCount = Math.floor(launch.satsCount * 0.04);
+        const deployed = launch.satsCount - doaCount;
+        state.constellation.totalSats += deployed;
+        state.constellation.activeSats += deployed;
         state.constellation.totalLaunched += launch.satsCount;
-        addLog('success', `${launch.vehicleName} launch SUCCESS! ${launch.satsCount} v${launch.generation} satellites deployed to orbit. Fleet: ${state.constellation.totalSats} sats`);
+        state.constellation.failedSats += doaCount;
+        const doaMsg = doaCount > 0 ? ` (${doaCount} DOA - failed to commission)` : '';
+        addLog('success', `${launch.vehicleName} launch SUCCESS! ${deployed} v${launch.generation} satellites deployed${doaMsg}. Fleet: ${state.constellation.totalSats} sats`);
         SoundEngine.play('upgrade');
       } else if (roll < launch.successRate + 0.05) {
         // Partial failure (5% chance beyond failure threshold)
@@ -1542,8 +1547,8 @@ function processLaunches(dt) {
 function processSatelliteAttrition(dt) {
   if (state.constellation.activeSats <= 0) return;
 
-  // Base failure rate: 0.5% per year per sat
-  const baseFailureRatePerSecond = 0.005 / (365.25 * 86400);
+  // Base failure rate: 3% per year per sat (real Starlink attrition)
+  const baseFailureRatePerSecond = 0.03 / (365.25 * 86400);
   // Debris-driven losses: orbitalDebrisLevel * 0.0001 per sat per day
   const debrisFailureRatePerSecond = (state.orbitalDebrisLevel * 0.0001) / 86400;
   // Total failure probability per sat per dt
@@ -4047,8 +4052,25 @@ function updateUI() {
         Math.min(state.launchVehicles.falcon9.cooldownDays, state.launchVehicles.starship.cooldownDays) * 86400
         - (state.simTime - state.lastLaunchTime)) : 0;
       lqDisplay.textContent = cooldownLeft > 0 ? 'Pad cooldown: ' + (cooldownLeft / 3600).toFixed(1) + 'h' :
-        'Fleet health: ' + state.constellation.avgSatHealth.toFixed(0) + '%';
+        'Fleet health: ' + state.constellation.avgSatHealth.toFixed(0) + '% | Attrition: ~' + Math.round(state.constellation.activeSats * 0.03) + '/yr';
     }
+  }
+  // Constellation milestones
+  const msEl = document.getElementById('constellation-milestone');
+  if (msEl) {
+    const sats = state.constellation.activeSats;
+    let milestone, nextTarget, color;
+    if (sats < 100) { milestone = 'Startup'; nextTarget = 100; color = '#888'; }
+    else if (sats < 1584) { milestone = 'Early Constellation'; nextTarget = 1584; color = '#4fc3f7'; }
+    else if (sats < 4408) { milestone = 'Shell 1 Complete'; nextTarget = 4408; color = '#66bb6a'; }
+    else if (sats < 12000) { milestone = 'Gen1 Constellation'; nextTarget = 12000; color = '#ffd700'; }
+    else if (sats < 30000) { milestone = 'Gen1 Complete'; nextTarget = 30000; color = '#ff9800'; }
+    else if (sats < 100000) { milestone = 'Gen2 Constellation'; nextTarget = 100000; color = '#f44336'; }
+    else { milestone = 'MEGA CONSTELLATION'; nextTarget = 1000000; color = '#e040fb'; }
+    const pct = Math.min(100, (sats / nextTarget * 100)).toFixed(0);
+    msEl.innerHTML = `<span style="color:${color}">${milestone}</span><br>` +
+      `<span style="color:#888">${sats.toLocaleString()} / ${nextTarget.toLocaleString()} sats (${pct}%)</span>`;
+  }
   }
   // Starship button state
   const ssBtn = document.getElementById('btn-launch-ss');
