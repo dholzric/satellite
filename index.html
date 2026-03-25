@@ -517,6 +517,19 @@ input[type="range"]::-webkit-slider-thumb {
       </div>
       <input type="range" id="ctrl-panel-angle" min="0" max="90" value="90" step="1">
       <button class="btn active" id="btn-auto-track">Auto Sun-Track</button>
+      <div class="control-row" style="margin-top:6px">
+        <label>Orientation</label>
+        <span class="value" id="val-orientation">SOLAR</span>
+      </div>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:3px">
+        <button class="btn active" id="btn-orient-solar" onclick="setOrientation('solar')">Solar</button>
+        <button class="btn" id="btn-orient-thermal" onclick="setOrientation('thermal')">Thermal</button>
+        <button class="btn" id="btn-orient-stealth" onclick="setOrientation('stealth')">Stealth</button>
+        <button class="btn" id="btn-orient-comms" onclick="setOrientation('comms')">Comms</button>
+      </div>
+      <div class="control-row" style="font-size:10px; color:#666;">
+        <label id="orient-desc">Panels 100% | Radiator load 40%</label>
+      </div>
     </div>
 
     <div class="panel-section">
@@ -998,11 +1011,19 @@ let state = {
   // Compute Piracy
   piratedTFLOPS: 0,       // bonus TFLOPS siphoned from rivals via cyber warfare
 
+  // Orientation mode for satellite attitude
+  orientationMode: 'solar', // 'solar', 'thermal', 'stealth', 'comms'
+
   // Evasion debuff from spy tourists
   evasionDebuffUntil: 0,  // simTime when spy evasion debuff expires
 
   // Booster events
   _pendingBoosterEvent: null, // { resolveTime, logged }
+
+  // Orbital Shells
+  orbitalShells: [
+    { name: 'LEO', altitude: 600, active: true, computeBonus: 1.0, latencyBonus: 1.5, eclipseRisk: 0.0, debrisRisk: 1.0 },
+  ],
 
   // Treaty tracking
   _lastTreatyCrisis: 0,
@@ -1066,8 +1087,9 @@ function computeRadiativeHeatLoss(radiatorArea, deployFraction, emissivity, temp
   // Radiator absorptivity (silver teflon/white paint) α ≈ 0.10-0.15
   // Sunlit radiators absorb α × 1361 W/m² ≈ 136-204 W/m² — eats into cooling capacity
   // ISS real-world: 70 kW rejected with 422 m² = only 166 W/m² effective (vs ~400+ theoretical)
-  // We model ~40% of radiator area as sun-exposed on average when in sunlight
-  const sunFraction = state.inEclipse ? 0 : 0.4;
+  // Orientation mode affects radiator solar loading
+  const orientModsRad = typeof getOrientationModifiers === 'function' ? getOrientationModifiers() : { radiatorSunFraction: 0.4 };
+  const sunFraction = state.inEclipse ? 0 : orientModsRad.radiatorSunFraction;
   const solarLoading = state.config.radiatorAbsorptivity * PHYSICS.SOLAR_IRRADIANCE *
     radiatorArea * deployFraction * sunFraction;
 
@@ -1131,7 +1153,36 @@ function computeTFLOPS() {
   // Performance scales linearly with clock (until thermal throttle)
   const thermalThrottle = state.coreTemp > 350 ? Math.max(0, 1 - (state.coreTemp - 350) / 40) : 1;
   const healthFactor = state.chipHealth / 100;
-  return state.activeModules * state.config.tflopsPerModule * clockFactor * thermalThrottle * healthFactor;
+  const baseTFLOPS = state.activeModules * state.config.tflopsPerModule * clockFactor * thermalThrottle * healthFactor;
+
+  // Orbital shell bonuses: sum of compute bonuses from all active shells
+  let shellBonus = 0;
+  for (const shell of state.orbitalShells) {
+    if (shell.active && shell.name !== 'LEO') {
+      shellBonus += shell.computeBonus;
+    }
+  }
+  return baseTFLOPS * (1 + shellBonus * 0.3);
+}
+
+// Compute effective job duration modifier from orbital shells (GEO latency penalty)
+function getShellLatencyModifier() {
+  let worstLatency = 1.0;
+  for (const shell of state.orbitalShells) {
+    if (shell.active && shell.latencyBonus < 1.0) {
+      // GEO latency penalty: jobs take longer
+      worstLatency = Math.max(worstLatency, 1 + (1 - shell.latencyBonus) * 0.3);
+    }
+  }
+  return worstLatency;
+}
+
+// Get MEO military detection bonus
+function getMeoDetectionBonus() {
+  for (const shell of state.orbitalShells) {
+    if (shell.name === 'MEO' && shell.active) return 0.2; // +20% evasion bonus from MEO surveillance
+  }
+  return 0;
 }
 
 // ============================================================
@@ -1156,6 +1207,7 @@ function updateSimulation(dtReal) {
 
   // --- Solar Power ---
   const effectivePanelAngle = state.autoTrack ? 90 : state.panelAngle;
+  const orientMods = getOrientationModifiers();
   state.solarGeneration = computeSolarPower(
     state.config.solarPanelArea,
     state.config.solarCellEfficiency,
@@ -1163,6 +1215,9 @@ function updateSimulation(dtReal) {
     effectivePanelAngle,
     state.panelDegradation
   );
+
+  // Apply orientation mode panel efficiency modifier
+  state.solarGeneration *= orientMods.panelEff;
 
   // Apply solar cycle power bonus (+5% at solar max)
   const solarCycleEarly = getSolarCyclePhase();
@@ -1377,27 +1432,88 @@ function spawnJob() {
     id: 'job_' + Date.now() + '_' + Math.floor(Math.random() * 100000),
     progress: 0,        // 0-1
     tflopsAllocated: 0,
-    active: true,
+    pending: true,       // must be accepted before work begins
+    active: false,
+    expiresAt: state.simTime + 1800, // 30 min sim time to accept
+    slaDeadline: 0,      // set when accepted
   };
   state.jobs.push(job);
-  addLog('info', `New job: ${job.name} (${job.tflopsReq} TFLOPS, $${job.reward})`);
+  addLog('info', `Contract offer: ${job.name} (${job.tflopsReq} TFLOPS, $${job.reward}) - ACCEPT or DECLINE`);
+}
+
+function acceptJob(jobId) {
+  const job = state.jobs.find(j => j.id === jobId);
+  if (!job || !job.pending) return;
+  job.pending = false;
+  job.active = true;
+  job.slaDeadline = state.simTime + job.duration * 2;
+  addLog('success', `Contract accepted: ${job.name} - SLA deadline: ${Math.ceil(job.duration * 2 / 3600)}h`);
+  SoundEngine.play('job');
+}
+
+function declineJob(jobId) {
+  const idx = state.jobs.findIndex(j => j.id === jobId);
+  if (idx === -1) return;
+  const job = state.jobs[idx];
+  if (!job.pending) return;
+  state.jobs.splice(idx, 1);
+  state.retaliationRisk = Math.min(1, state.retaliationRisk + 0.02);
+  addLog('warn', `Contract declined: ${job.name} - minor reputation hit`);
 }
 
 function processJobs(dt) {
-  // Distribute available TFLOPS across active jobs
+  // Expire pending jobs that weren't accepted in time
+  for (let i = state.jobs.length - 1; i >= 0; i--) {
+    const job = state.jobs[i];
+    if (job.pending && state.simTime >= job.expiresAt) {
+      addLog('warn', `Contract expired: ${job.name} - offer window closed`);
+      state.jobs.splice(i, 1);
+    }
+  }
+
+  // Corporate rivals can steal pending jobs
+  const corporateRivals = state.rivals.filter(r => r.specialization === 'corporate' && r.health > 0 && !r.disabled);
+  for (let i = state.jobs.length - 1; i >= 0; i--) {
+    const job = state.jobs[i];
+    if (job.pending && corporateRivals.length > 0) {
+      const timeWaiting = state.simTime - (job.expiresAt - 1800);
+      if (timeWaiting > 600 && Math.random() < 0.0001 * dt) {
+        const thief = corporateRivals[Math.floor(Math.random() * corporateRivals.length)];
+        addLog('error', `${thief.name} stole your ${job.name} contract!`);
+        thief.jobsCompleted = (thief.jobsCompleted || 0) + 1;
+        thief.credits = (thief.credits || 0) + job.reward;
+        state.jobs.splice(i, 1);
+      }
+    }
+  }
+
+  // Check SLA breaches for active jobs
+  for (let i = state.jobs.length - 1; i >= 0; i--) {
+    const job = state.jobs[i];
+    if (job.active && !job.pending && job.slaDeadline > 0 && state.simTime > job.slaDeadline) {
+      const penalty = Math.floor(job.reward * 0.5);
+      state.credits -= penalty;
+      addLog('error', `SLA BREACH: ${job.name} - penalty $${penalty.toLocaleString()}`);
+      state.jobs.splice(i, 1);
+    }
+  }
+
+  // Distribute available TFLOPS across active jobs (skip pending)
   let availableTFLOPS = state.currentTFLOPS;
 
   for (const job of state.jobs) {
-    if (!job.active) continue;
+    if (!job.active || job.pending) continue;
     const allocated = Math.min(availableTFLOPS, job.tflopsReq);
     job.tflopsAllocated = allocated;
-    const progressRate = (allocated / job.tflopsReq) / job.duration;
+    const latencyMod = getShellLatencyModifier(); // GEO latency slows jobs
+    const progressRate = (allocated / job.tflopsReq) / (job.duration * latencyMod);
     job.progress += progressRate * dt;
     availableTFLOPS -= allocated;
 
     if (job.progress >= 1) {
       job.progress = 1;
       job.active = false;
+      job.pending = false;
       // Day-based reward scaling: +0.5% per day, capped at 3x
       const dayMultiplier = Math.min(3, 1 + (state.day - 1) * 0.005);
       let effectiveReward = Math.floor(job.reward * dayMultiplier);
@@ -1432,8 +1548,8 @@ function processJobs(dt) {
     }
   }
 
-  // Remove completed jobs
-  state.jobs = state.jobs.filter(j => j.active);
+  // Remove completed jobs (keep pending and active)
+  state.jobs = state.jobs.filter(j => j.active || j.pending);
 }
 
 // ============================================================
@@ -1650,6 +1766,12 @@ const TECH_TREE = {
       apply: (c) => { state.hasWeapons = true; c._hasCyber = true; } },
     { id: 'mil_t3_hardened', tier: 3, name: 'Hardened Satellites', cost: 12000, desc: 'Rad shielding + maneuver fuel', requires: ['mil_t2_dazzle'], branch: 'military',
       apply: (c) => { c._radHard = true; c._evasion = 0.4; c._shieldLevel = 1; state.shieldHealth = 100; } },
+    { id: 'mil_t3_meo', tier: 3, name: 'MEO Surveillance Ring', cost: 18000,
+      desc: 'Medium Earth Orbit: GPS altitude. Better coverage, higher radiation.',
+      requires: ['mil_t2_asat'], branch: 'military',
+      apply: (c) => {
+        state.orbitalShells.push({ name: 'MEO', altitude: 20200, active: true, computeBonus: 0.8, latencyBonus: 0.8, eclipseRisk: 0.15, debrisRisk: 0.3 });
+      } },
     { id: 'mil_t4_battlestation', tier: 4, name: 'Battle Station', cost: 40000, desc: 'Armed data center with point defense + mega laser', requires: ['mil_t3_grapple', 'mil_t3_hardened'], branch: 'military',
       apply: (c) => { c._weaponPower = 3000; c._shieldLevel = 2; c._debrisCleanup = true; } },
     { id: 'mil_t4_proxy', tier: 4, name: 'Proxy Launch Network', cost: 30000, desc: 'Deniable equatorial launch sites. Plausible deniability.', requires: ['mil_t3_xray'], branch: 'military',
@@ -1666,6 +1788,14 @@ const TECH_TREE = {
       apply: (c) => { c._hasMarket = true; } },
     { id: 'corp_t3_megaconst', tier: 3, name: 'Mega Constellation', cost: 18000, desc: 'Starship-train assembly. +2 compute modules, low-latency mesh.', requires: ['corp_t2_datacenter'], branch: 'corporate',
       apply: (c) => { c.computeModules += 2; state.maxModules += 2; c.tflopsPerModule = 300; document.getElementById('ctrl-compute').max = state.maxModules; } },
+    { id: 'corp_t3_geo', tier: 3, name: 'GEO Relay Station', cost: 20000,
+      desc: 'Geostationary orbit: always-on but higher latency. +30% job capacity.',
+      requires: ['corp_t2_datacenter'], branch: 'corporate',
+      apply: (c) => {
+        state.orbitalShells.push({ name: 'GEO', altitude: 35786, active: true, computeBonus: 0.7, latencyBonus: 0.5, eclipseRisk: 0.04, debrisRisk: 0.2 });
+        c.computeModules += 1; state.maxModules += 1;
+        document.getElementById('ctrl-compute').max = state.maxModules;
+      } },
     { id: 'corp_t3_antipiracy', tier: 3, name: 'Anti-Piracy Encryption', cost: 10000, desc: 'Encrypted cores, lag-spike detection. Blocks compute theft.', requires: ['corp_t2_market'], branch: 'corporate',
       apply: (c) => { c._antiPiracy = true; } },
     { id: 'corp_t4_asteroid', tier: 4, name: 'Asteroid Mining', cost: 35000, desc: 'Propellant + rare earth mining. Cheaper refuels.', requires: ['corp_t3_megaconst'], branch: 'corporate',
@@ -1805,6 +1935,11 @@ function initRivals() {
       retaliating: false,
       retaliationCooldown: 0,
       lastAttackedBy: null,
+      credits: 10000,
+      tflops: 500 + Math.random() * 500,
+      jobsCompleted: 0,
+      specialization: ['military', 'corporate', 'green'][i],
+      lastEconUpdate: 0,
     });
   }
 }
@@ -1906,6 +2041,35 @@ function processRivals(dt) {
   // Attack cooldown
   if (state.attackCooldown > 0) {
     state.attackCooldown = Math.max(0, state.attackCooldown - dt);
+  }
+
+  // Rival economy simulation
+  for (const rival of state.rivals) {
+    if (rival.health <= 0 || rival.disabled) continue;
+    
+    // Rivals earn credits over time
+    rival.credits += rival.tflops * 0.5 * dt / 3600;
+    
+    // Rival upgrades when accumulating enough credits
+    if (rival.credits > 20000 && (!rival.lastEconUpdate || state.simTime - rival.lastEconUpdate > 60)) {
+      rival.lastEconUpdate = state.simTime;
+      if (rival.credits > 30000) {
+        rival.tflops += 10;
+        rival.credits -= 5000;
+        // Health regen from investment
+        rival.health = Math.min(100, rival.health + 2);
+      }
+    }
+
+    // Military rivals attack more often
+    if (rival.specialization === 'military' && !rival.retaliating && Math.random() < 0.00002 * dt) {
+      executeRivalAttack(rival);
+    }
+
+    // Green rivals reduce debris passively
+    if (rival.specialization === 'green' && state.orbitalDebrisLevel > 0) {
+      state.orbitalDebrisLevel = Math.max(0, state.orbitalDebrisLevel - 0.0002 * dt);
+    }
   }
 
   // Sanction timer
@@ -2211,7 +2375,11 @@ function executeRivalAttack(rival) {
   addLog('error', `${rival.name} is retaliating!`);
 
   // Rivals use laser attacks (no debris from AI)
-  let effectiveEvasion = state.config._evasion || 0;
+  let effectiveEvasion = (state.config._evasion || 0) + getMeoDetectionBonus(); // MEO adds detection bonus
+  // Stealth orientation adds evasion bonus
+  const orientModsEvade = typeof getOrientationModifiers === 'function' ? getOrientationModifiers() : { evasionBonus: 0 };
+  effectiveEvasion += orientModsEvade.evasionBonus;
+  effectiveEvasion = Math.min(0.9, effectiveEvasion); // cap at 90%
   if (state.evasionDebuffUntil > state.simTime) effectiveEvasion *= 0.8; // spy tourist debuff
   const evaded = Math.random() < effectiveEvasion;
   if (evaded) {
@@ -2700,7 +2868,8 @@ function renderCombatPanel() {
     html += `<div class="job-card" style="border-color:${sColor}">
       <div style="flex:1">
         <div style="color:${sColor}">${r.name} <span style="color:#888">(${r.nation})</span></div>
-        <div style="font-size:10px;color:#888">Health: ${Math.max(0,r.health).toFixed(0)}% | ${status}</div>
+        <div style="font-size:10px;color:#888">HP: ${Math.max(0,r.health).toFixed(0)}% | ${r.tflops ? Math.floor(r.tflops) : '?'} TFLOPS | $${r.credits ? Math.floor(r.credits).toLocaleString() : '?'} | ${r.specialization ? r.specialization.toUpperCase() : ''}</div>
+        <div style="font-size:10px;color:#888">${status}${r.jobsCompleted ? ' | Jobs: ' + r.jobsCompleted : ''}</div>
         ${state.hasWeapons && r.health > 0 && !r.disabled ? `<div style="margin-top:3px">
           ${state.config._hasLaser ? `<button class="btn" style="display:inline;width:auto;padding:2px 6px;font-size:9px" onclick="attackRival(${r.id},'laser')">LASER</button>` : ''}
           ${state.config._hasCyber ? `<button class="btn" style="display:inline;width:auto;padding:2px 6px;font-size:9px" onclick="attackRival(${r.id},'cyber')">HACK</button>` : ''}
@@ -2845,7 +3014,7 @@ function drawScene() {
   ctx.arc(cx, cy, earthRadius + 2, 0, Math.PI * 2);
   ctx.stroke();
 
-  // Orbit path (dashed)
+  // Orbit path (dashed) - LEO
   ctx.strokeStyle = 'rgba(79,195,247,0.15)';
   ctx.lineWidth = 1;
   ctx.setLineDash([4, 8]);
@@ -2853,6 +3022,83 @@ function drawScene() {
   ctx.arc(cx, cy, orbitRadius, 0, Math.PI * 2);
   ctx.stroke();
   ctx.setLineDash([]);
+
+  // LEO label
+  ctx.fillStyle = 'rgba(79,195,247,0.3)';
+  ctx.font = '9px monospace';
+  ctx.textAlign = 'center';
+  ctx.fillText('LEO 600km', cx, cy - orbitRadius - 4);
+  ctx.textAlign = 'left';
+
+  // Additional orbital shell rings (MEO, GEO)
+  const viewportEdge = Math.min(w, h) * 0.48; // max radius for rings
+  for (const shell of state.orbitalShells) {
+    if (shell.name === 'LEO') continue; // LEO already drawn above
+    if (!shell.active) continue;
+
+    let shellRadius, shellColor, shellDash;
+    if (shell.name === 'MEO') {
+      // MEO: ~60% of way from orbit to edge
+      shellRadius = orbitRadius + (viewportEdge - orbitRadius) * 0.6;
+      shellColor = 'rgba(255,220,50,0.2)';
+      shellDash = [6, 6];
+    } else if (shell.name === 'GEO') {
+      // GEO: near viewport edge
+      shellRadius = orbitRadius + (viewportEdge - orbitRadius) * 0.9;
+      shellColor = 'rgba(255,140,40,0.2)';
+      shellDash = [8, 4];
+    } else {
+      shellRadius = orbitRadius + (viewportEdge - orbitRadius) * 0.5;
+      shellColor = 'rgba(200,200,200,0.15)';
+      shellDash = [4, 8];
+    }
+
+    // Draw ring
+    ctx.strokeStyle = shellColor;
+    ctx.lineWidth = 1;
+    ctx.setLineDash(shellDash);
+    ctx.beginPath();
+    ctx.arc(cx, cy, shellRadius, 0, Math.PI * 2);
+    ctx.stroke();
+    ctx.setLineDash([]);
+
+    // Label
+    const labelColor = shell.name === 'MEO' ? 'rgba(255,220,50,0.4)' : 'rgba(255,140,40,0.4)';
+    ctx.fillStyle = labelColor;
+    ctx.font = '9px monospace';
+    ctx.textAlign = 'center';
+    const altLabel = shell.altitude >= 10000 ? Math.round(shell.altitude).toLocaleString() : shell.altitude;
+    ctx.fillText(shell.name + ' ' + altLabel + 'km', cx, cy - shellRadius - 4);
+    ctx.textAlign = 'left';
+
+    // Small satellite marker orbiting this shell
+    const shellOrbitalAngle = (state.orbitalAngle * 0.7 + (shell.name === 'GEO' ? 0.5 : 1.2)) % (Math.PI * 2);
+    const shellSatX = cx + shellRadius * Math.cos(shellOrbitalAngle);
+    const shellSatY = cy + shellRadius * Math.sin(shellOrbitalAngle);
+    const dotColor = shell.name === 'MEO' ? '#ffd700' : '#ff8c28';
+    ctx.fillStyle = dotColor;
+    ctx.beginPath();
+    ctx.arc(shellSatX, shellSatY, 3, 0, Math.PI * 2);
+    ctx.fill();
+    // Tiny panel lines
+    ctx.strokeStyle = dotColor;
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    ctx.moveTo(shellSatX - 6, shellSatY);
+    ctx.lineTo(shellSatX + 6, shellSatY);
+    ctx.stroke();
+    // Data link to primary satellite
+    ctx.strokeStyle = `rgba(${shell.name === 'MEO' ? '255,220,50' : '255,140,40'},0.12)`;
+    ctx.lineWidth = 1;
+    ctx.setLineDash([3, 5]);
+    ctx.beginPath();
+    ctx.moveTo(shellSatX, shellSatY);
+    const primarySatX = cx + orbitRadius * Math.cos(state.orbitalAngle);
+    const primarySatY = cy + orbitRadius * Math.sin(state.orbitalAngle);
+    ctx.lineTo(primarySatX, primarySatY);
+    ctx.stroke();
+    ctx.setLineDash([]);
+  }
 
   // Eclipse zone (shadow)
   const eclipseAngle = state.eclipseFraction * Math.PI;
@@ -3146,6 +3392,91 @@ function drawScene() {
     ctx.textAlign = 'left';
   }
 
+  // Asteroid mining visualization (when corp_t4_asteroid is owned)
+  if (state.config._miningIncome && state.config._miningIncome >= 500) {
+    // Asteroid orbits at ~120% of orbit radius
+    const asteroidOrbitRadius = orbitRadius * 1.2;
+    const asteroidAngle = state.simTime * 0.0003; // slow orbit
+    const astX = cx + asteroidOrbitRadius * Math.cos(asteroidAngle);
+    const astY = cy + asteroidOrbitRadius * Math.sin(asteroidAngle);
+
+    // Draw irregular asteroid shape (brownish-gray)
+    ctx.save();
+    ctx.translate(astX, astY);
+    ctx.rotate(state.simTime * 0.2); // slow tumble
+    ctx.fillStyle = '#8B7355';
+    ctx.beginPath();
+    ctx.moveTo(-6, -3);
+    ctx.lineTo(-3, -6);
+    ctx.lineTo(3, -5);
+    ctx.lineTo(6, -2);
+    ctx.lineTo(5, 3);
+    ctx.lineTo(2, 6);
+    ctx.lineTo(-4, 4);
+    ctx.lineTo(-7, 1);
+    ctx.closePath();
+    ctx.fill();
+    ctx.strokeStyle = '#6B5B45';
+    ctx.lineWidth = 1;
+    ctx.stroke();
+    // Crater details
+    ctx.fillStyle = 'rgba(80,60,40,0.5)';
+    ctx.beginPath();
+    ctx.arc(-1, -1, 2, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.beginPath();
+    ctx.arc(2, 2, 1.5, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.restore();
+
+    // Label
+    ctx.fillStyle = 'rgba(180,140,80,0.6)';
+    ctx.font = '8px monospace';
+    ctx.textAlign = 'center';
+    ctx.fillText('ASTEROID MINE', astX, astY + 14);
+    ctx.textAlign = 'left';
+
+    // Mining laser beam from satellite when somewhat in range
+    const satXA = cx + orbitRadius * Math.cos(satAngle);
+    const satYA = cy + orbitRadius * Math.sin(satAngle);
+    const distToAsteroid = Math.sqrt((satXA - astX) ** 2 + (satYA - astY) ** 2);
+    const maxLaserRange = orbitRadius * 0.8;
+    if (distToAsteroid < maxLaserRange) {
+      // Mining laser beam
+      const laserAlpha = 0.15 + Math.sin(state.simTime * 5) * 0.08;
+      ctx.strokeStyle = `rgba(255, 100, 50, ${laserAlpha})`;
+      ctx.lineWidth = 1.5;
+      ctx.setLineDash([3, 4]);
+      ctx.beginPath();
+      ctx.moveTo(satXA, satYA);
+      ctx.lineTo(astX, astY);
+      ctx.stroke();
+      ctx.setLineDash([]);
+
+      // Small mined material particles floating away
+      if (!drawScene._mineParticles) {
+        drawScene._mineParticles = [];
+        for (let i = 0; i < 12; i++) {
+          drawScene._mineParticles.push({
+            offsetAngle: Math.random() * Math.PI * 2,
+            dist: 8 + Math.random() * 15,
+            speed: 0.3 + Math.random() * 0.5,
+            size: 0.5 + Math.random() * 1.5,
+            phase: Math.random() * Math.PI * 2,
+          });
+        }
+      }
+      for (const mp of drawScene._mineParticles) {
+        const pAngle = mp.offsetAngle + state.simTime * mp.speed;
+        const px = astX + Math.cos(pAngle) * mp.dist;
+        const py = astY + Math.sin(pAngle) * mp.dist;
+        const pAlpha = 0.3 + Math.sin(state.simTime * 2 + mp.phase) * 0.2;
+        ctx.fillStyle = `rgba(180, 150, 100, ${pAlpha})`;
+        ctx.fillRect(px, py, mp.size, mp.size);
+      }
+    }
+  }
+
   // Orbit info text
   ctx.fillStyle = '#4fc3f7';
   ctx.font = '11px monospace';
@@ -3242,12 +3573,23 @@ function drawSatellite(x, y, angle) {
   ctx.save();
   ctx.translate(x, y);
 
-  const bodyW = 20, bodyH = 14;
+  // Megastructure scaling based on module count
+  const mods = state.maxModules;
+  const bodyW = 20 + Math.max(0, mods - 4) * 4;
+  const bodyH = 14;
+  const panelW = 35 + Math.max(0, mods - 4) * 5;
+  const panelH = 10;
+
+  // Determine structure type label
+  let structureLabel = 'SAT-DC1';
+  if (mods >= 10) structureLabel = 'ORBITAL STATION';
+  else if (mods >= 8) structureLabel = 'STARSHIP TRAIN';
+  else if (mods >= 6) structureLabel = 'DUAL-SAT CLUSTER';
 
   // Heat glow effect: when coreTemp > 320K, draw a soft orange/red glow around the satellite body
   if (state.coreTemp > 320) {
     const glowIntensity = Math.min(1, (state.coreTemp - 320) / 70);
-    const glowRadius = 25 + glowIntensity * 15;
+    const glowRadius = 25 + glowIntensity * 15 + Math.max(0, mods - 4) * 3;
     const r = Math.min(255, 200 + glowIntensity * 55);
     const g = Math.max(0, 120 - glowIntensity * 120);
     const b = 0;
@@ -3265,7 +3607,7 @@ function drawSatellite(x, y, angle) {
   if (state.shieldHealth > 0) {
     const shieldAlpha = 0.1 + (state.shieldHealth / 100) * 0.25;
     const shieldPulse = Math.sin(state.simTime * 1.5) * 0.05;
-    const shieldRadius = 28 + (state.config._shieldLevel === 2 ? 8 : 0);
+    const shieldRadius = 28 + (state.config._shieldLevel === 2 ? 8 : 0) + Math.max(0, mods - 4) * 3;
     ctx.strokeStyle = `rgba(80, 180, 255, ${shieldAlpha + shieldPulse})`;
     ctx.lineWidth = 1.5;
     ctx.beginPath();
@@ -3283,15 +3625,129 @@ function drawSatellite(x, y, angle) {
     ctx.fill();
   }
 
-  // Satellite body
-  ctx.fillStyle = state.coreTemp > 350 ? '#ff6b35' : state.coreTemp > 330 ? '#ffa726' : '#78909c';
-  ctx.strokeStyle = '#b0bec5';
-  ctx.lineWidth = 1;
-  ctx.fillRect(-bodyW/2, -bodyH/2, bodyW, bodyH);
-  ctx.strokeRect(-bodyW/2, -bodyH/2, bodyW, bodyH);
+  // === MEGASTRUCTURE MODES ===
+
+  if (mods >= 10) {
+    // ORBITAL STATION: ring structure with spinning dots
+    const ringRadius = bodyW * 0.6;
+    const bodyColor = state.coreTemp > 350 ? '#ff6b35' : state.coreTemp > 330 ? '#ffa726' : '#78909c';
+
+    // Central hub
+    ctx.fillStyle = bodyColor;
+    ctx.strokeStyle = '#b0bec5';
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    ctx.arc(0, 0, 8, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.stroke();
+
+    // Outer ring
+    ctx.strokeStyle = '#b0bec5';
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.arc(0, 0, ringRadius, 0, Math.PI * 2);
+    ctx.stroke();
+
+    // Ring fill (thin)
+    ctx.strokeStyle = bodyColor;
+    ctx.lineWidth = 4;
+    ctx.beginPath();
+    ctx.arc(0, 0, ringRadius, 0, Math.PI * 2);
+    ctx.stroke();
+
+    // Spokes connecting hub to ring
+    ctx.strokeStyle = 'rgba(176,190,197,0.5)';
+    ctx.lineWidth = 1;
+    for (let i = 0; i < 4; i++) {
+      const spokeAngle = (i / 4) * Math.PI * 2 + state.simTime * 0.3;
+      ctx.beginPath();
+      ctx.moveTo(Math.cos(spokeAngle) * 8, Math.sin(spokeAngle) * 8);
+      ctx.lineTo(Math.cos(spokeAngle) * ringRadius, Math.sin(spokeAngle) * ringRadius);
+      ctx.stroke();
+    }
+
+    // Spinning habitat dots on the ring
+    for (let i = 0; i < 8; i++) {
+      const dotAngle = (i / 8) * Math.PI * 2 + state.simTime * 0.5;
+      const dx = Math.cos(dotAngle) * ringRadius;
+      const dy = Math.sin(dotAngle) * ringRadius;
+      const blinkPhase = Math.sin(state.simTime * 4 + i * 0.8);
+      ctx.fillStyle = `rgba(0, 255, 100, ${0.5 + blinkPhase * 0.5})`;
+      ctx.beginPath();
+      ctx.arc(dx, dy, 2, 0, Math.PI * 2);
+      ctx.fill();
+    }
+
+  } else if (mods >= 8) {
+    // STARSHIP TRAIN: 3 bodies in a row
+    const bodyColor = state.coreTemp > 350 ? '#ff6b35' : state.coreTemp > 330 ? '#ffa726' : '#78909c';
+    const segW = bodyW / 3 - 2;
+    for (let s = 0; s < 3; s++) {
+      const sx = (s - 1) * (segW + 4);
+      ctx.fillStyle = bodyColor;
+      ctx.strokeStyle = '#b0bec5';
+      ctx.lineWidth = 1;
+      ctx.fillRect(sx - segW/2, -bodyH/2, segW, bodyH);
+      ctx.strokeRect(sx - segW/2, -bodyH/2, segW, bodyH);
+    }
+    // Docking connectors between segments
+    ctx.strokeStyle = '#ffd700';
+    ctx.lineWidth = 1.5;
+    for (let s = 0; s < 2; s++) {
+      const cx1 = (s - 1) * (segW + 4) + segW/2;
+      const cx2 = (s) * (segW + 4) - segW/2;
+      ctx.beginPath();
+      ctx.moveTo(cx1, -2);
+      ctx.lineTo(cx2, -2);
+      ctx.moveTo(cx1, 2);
+      ctx.lineTo(cx2, 2);
+      ctx.stroke();
+    }
+
+  } else if (mods >= 6) {
+    // DUAL-SAT CLUSTER: 2 satellite bodies docked
+    const bodyColor = state.coreTemp > 350 ? '#ff6b35' : state.coreTemp > 330 ? '#ffa726' : '#78909c';
+    const halfW = bodyW / 2 - 1;
+    // Body 1
+    ctx.fillStyle = bodyColor;
+    ctx.strokeStyle = '#b0bec5';
+    ctx.lineWidth = 1;
+    ctx.fillRect(-halfW - 2, -bodyH/2, halfW, bodyH);
+    ctx.strokeRect(-halfW - 2, -bodyH/2, halfW, bodyH);
+    // Body 2
+    ctx.fillRect(2, -bodyH/2, halfW, bodyH);
+    ctx.strokeRect(2, -bodyH/2, halfW, bodyH);
+    // Docking port
+    ctx.fillStyle = '#ffd700';
+    ctx.beginPath();
+    ctx.arc(0, -3, 2, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.beginPath();
+    ctx.arc(0, 3, 2, 0, Math.PI * 2);
+    ctx.fill();
+
+  } else {
+    // Standard satellite body
+    ctx.fillStyle = state.coreTemp > 350 ? '#ff6b35' : state.coreTemp > 330 ? '#ffa726' : '#78909c';
+    ctx.strokeStyle = '#b0bec5';
+    ctx.lineWidth = 1;
+    ctx.fillRect(-bodyW/2, -bodyH/2, bodyW, bodyH);
+    ctx.strokeRect(-bodyW/2, -bodyH/2, bodyW, bodyH);
+  }
+
+  // Docking port indicators at body edges when modules > 6
+  if (mods > 6 && mods < 10) {
+    ctx.fillStyle = 'rgba(255,215,0,0.6)';
+    ctx.beginPath();
+    ctx.arc(-bodyW/2, 0, 2, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.beginPath();
+    ctx.arc(bodyW/2, 0, 2, 0, Math.PI * 2);
+    ctx.fill();
+  }
 
   // Compute activity indicator: small blinking dots on the satellite body (one per active module)
-  if (state.activeModules > 0) {
+  if (state.activeModules > 0 && mods < 10) {
     const dotSpacing = bodyW / (state.maxModules + 1);
     for (let i = 0; i < state.activeModules; i++) {
       const blinkPhase = Math.sin(state.simTime * 4 + i * 1.5);
@@ -3305,40 +3761,60 @@ function drawSatellite(x, y, angle) {
     }
   }
 
-  // Solar panels
-  const panelW = 35, panelH = 10;
+  // Solar panels (scale with megastructure)
   const panelColor = state.inEclipse ? '#1a237e' : '#1565c0';
   ctx.fillStyle = panelColor;
   ctx.strokeStyle = '#42a5f5';
   ctx.lineWidth = 0.5;
 
-  // Left panel
-  ctx.fillRect(-bodyW/2 - panelW - 3, -panelH/2, panelW, panelH);
-  ctx.strokeRect(-bodyW/2 - panelW - 3, -panelH/2, panelW, panelH);
-  // Panel grid lines
-  ctx.strokeStyle = 'rgba(66,165,245,0.3)';
-  for (let i = 1; i < 5; i++) {
-    ctx.beginPath();
-    ctx.moveTo(-bodyW/2 - panelW - 3 + i * panelW/5, -panelH/2);
-    ctx.lineTo(-bodyW/2 - panelW - 3 + i * panelW/5, panelH/2);
-    ctx.stroke();
-  }
+  if (mods < 10) {
+    // Left panel
+    ctx.fillRect(-bodyW/2 - panelW - 3, -panelH/2, panelW, panelH);
+    ctx.strokeRect(-bodyW/2 - panelW - 3, -panelH/2, panelW, panelH);
+    // Panel grid lines
+    ctx.strokeStyle = 'rgba(66,165,245,0.3)';
+    const gridCount = Math.max(3, Math.floor(panelW / 7));
+    for (let i = 1; i < gridCount; i++) {
+      ctx.beginPath();
+      ctx.moveTo(-bodyW/2 - panelW - 3 + i * panelW/gridCount, -panelH/2);
+      ctx.lineTo(-bodyW/2 - panelW - 3 + i * panelW/gridCount, panelH/2);
+      ctx.stroke();
+    }
 
-  // Right panel
-  ctx.fillStyle = panelColor;
-  ctx.strokeStyle = '#42a5f5';
-  ctx.lineWidth = 0.5;
-  ctx.fillRect(bodyW/2 + 3, -panelH/2, panelW, panelH);
-  ctx.strokeRect(bodyW/2 + 3, -panelH/2, panelW, panelH);
-  for (let i = 1; i < 5; i++) {
-    ctx.beginPath();
-    ctx.moveTo(bodyW/2 + 3 + i * panelW/5, -panelH/2);
-    ctx.lineTo(bodyW/2 + 3 + i * panelW/5, panelH/2);
-    ctx.stroke();
+    // Right panel
+    ctx.fillStyle = panelColor;
+    ctx.strokeStyle = '#42a5f5';
+    ctx.lineWidth = 0.5;
+    ctx.fillRect(bodyW/2 + 3, -panelH/2, panelW, panelH);
+    ctx.strokeRect(bodyW/2 + 3, -panelH/2, panelW, panelH);
+    ctx.strokeStyle = 'rgba(66,165,245,0.3)';
+    for (let i = 1; i < gridCount; i++) {
+      ctx.beginPath();
+      ctx.moveTo(bodyW/2 + 3 + i * panelW/gridCount, -panelH/2);
+      ctx.lineTo(bodyW/2 + 3 + i * panelW/gridCount, panelH/2);
+      ctx.stroke();
+    }
+  } else {
+    // Orbital station: 4 large panel arrays around the ring
+    const ringRadius = bodyW * 0.6;
+    for (let i = 0; i < 4; i++) {
+      const pAngle = (i / 4) * Math.PI * 2 + Math.PI / 4;
+      const px = Math.cos(pAngle) * (ringRadius + panelW/2 + 5);
+      const py = Math.sin(pAngle) * (ringRadius + panelW/2 + 5);
+      ctx.save();
+      ctx.translate(px, py);
+      ctx.rotate(pAngle);
+      ctx.fillStyle = panelColor;
+      ctx.fillRect(-panelW/3, -panelH/2, panelW * 0.6, panelH);
+      ctx.strokeStyle = '#42a5f5';
+      ctx.lineWidth = 0.5;
+      ctx.strokeRect(-panelW/3, -panelH/2, panelW * 0.6, panelH);
+      ctx.restore();
+    }
   }
 
   // Radiator panels (top and bottom, when deployed)
-  if (state.radiatorDeployment > 20) {
+  if (state.radiatorDeployment > 20 && mods < 10) {
     const radH = 8 * (state.radiatorDeployment / 100);
     ctx.fillStyle = 'rgba(200,200,200,0.6)';
     ctx.fillRect(-bodyW/2, -bodyH/2 - radH - 2, bodyW, radH);
@@ -3365,11 +3841,12 @@ function drawSatellite(x, y, angle) {
     ctx.setLineDash([]);
   }
 
-  // Satellite label
+  // Satellite label - shows structure type
   ctx.fillStyle = '#4fc3f7';
   ctx.font = '9px monospace';
   ctx.textAlign = 'center';
-  ctx.fillText('SAT-DC1', 0, -bodyH/2 - (state.radiatorDeployment > 20 ? 15 : 5));
+  const labelOffset = mods >= 10 ? bodyW * 0.6 + 18 : (state.radiatorDeployment > 20 ? 15 : 5);
+  ctx.fillText(structureLabel, 0, -bodyH/2 - labelOffset);
 
   ctx.restore();
 }
@@ -3378,9 +3855,17 @@ function drawSatellite(x, y, angle) {
 // UI UPDATE
 // ============================================================
 function updateUI() {
-  // Header
-  const orbitLabel = state.config.orbitType === 'sun-sync' ? ' km SSO' : ' km LEO';
-  document.getElementById('hud-orbit').textContent = state.config.altitude + orbitLabel;
+  // Header - Orbital Shells display
+  if (state.orbitalShells.length > 1) {
+    const shellText = state.orbitalShells.filter(s => s.active).map(s => {
+      const alt = s.altitude >= 10000 ? Math.round(s.altitude).toLocaleString() : s.altitude;
+      return s.name + ' ' + alt + 'km';
+    }).join(' | ');
+    document.getElementById('hud-orbit').textContent = shellText;
+  } else {
+    const orbitLabel = state.config.orbitType === 'sun-sync' ? ' km SSO' : ' km LEO';
+    document.getElementById('hud-orbit').textContent = state.config.altitude + orbitLabel;
+  }
   document.getElementById('hud-time').textContent = formatTime(state.simTime);
   document.getElementById('hud-credits').textContent = '$' + state.credits.toLocaleString();
   document.getElementById('hud-day').textContent = state.day;
@@ -3444,7 +3929,8 @@ function updateUI() {
   document.getElementById('val-seu-rate').textContent = state.seuRate.toFixed(0) + ' /s';
 
   // Bandwidth
-  document.getElementById('val-bandwidth').textContent = state.uplinkActive ? '1.0 Tbps' : 'OFF';
+  const bwMult = typeof getOrientationModifiers === 'function' ? getOrientationModifiers().bwMultiplier : 1.0;
+  document.getElementById('val-bandwidth').textContent = state.uplinkActive ? (1.0 * bwMult).toFixed(1) + ' Tbps' : 'OFF';
   document.getElementById('val-uplink').textContent = state.uplinkActive ? 'ON' : 'OFF';
 
   // AI Risk Meter (add dynamically to right panel)
@@ -3519,19 +4005,55 @@ function updateUI() {
     ).join('');
   }
 
-  // Active jobs (throttled)
+  // Jobs UI - split into Incoming Contracts and Active Jobs (throttled)
   if (!updateUI._lastJobs || performance.now() - updateUI._lastJobs > 400) {
     updateUI._lastJobs = performance.now();
     const jobsEl = document.getElementById('active-jobs');
-    jobsEl.innerHTML = state.jobs.filter(j => j.active).map(j => `
-      <div class="job-card">
-        <div style="flex:1">
-          <div class="job-name">${j.name}</div>
-          <div style="font-size:10px;color:#888">${j.tflopsReq} TFLOPS | <span class="job-reward">$${j.reward}</span></div>
-          <div class="job-progress"><div class="job-progress-fill" style="width:${j.progress*100}%"></div></div>
-        </div>
-      </div>
-    `).join('') || '<div style="color:#555;font-size:11px">No active jobs</div>';
+    let jobsHtml = '';
+
+    // Incoming Contracts (pending)
+    const pendingJobs = state.jobs.filter(j => j.pending);
+    if (pendingJobs.length > 0) {
+      jobsHtml += '<div style="font-size:10px;color:#ff9800;text-transform:uppercase;margin-bottom:4px">Incoming Contracts</div>';
+      pendingJobs.forEach(j => {
+        const timeLeft = Math.max(0, j.expiresAt - state.simTime);
+        const timeStr = Math.ceil(timeLeft / 60) + 'm';
+        jobsHtml += `<div class="job-card" style="border-color:#ff9800">
+          <div style="flex:1">
+            <div class="job-name">${j.name}</div>
+            <div style="font-size:10px;color:#888">${j.tflopsReq} TFLOPS | <span class="job-reward">$${j.reward}</span> | SLA: ${Math.ceil(j.duration * 2 / 3600)}h | Expires: ${timeStr}</div>
+            <div style="margin-top:3px">
+              <button class="btn" style="display:inline;width:auto;padding:2px 8px;font-size:9px;border-color:#66bb6a;color:#66bb6a" onclick="acceptJob('${j.id}')">ACCEPT</button>
+              <button class="btn" style="display:inline;width:auto;padding:2px 8px;font-size:9px;border-color:#f44336;color:#f44336" onclick="declineJob('${j.id}')">DECLINE</button>
+            </div>
+          </div>
+        </div>`;
+      });
+    }
+
+    // Active Jobs (accepted, in progress)
+    const activeJobs = state.jobs.filter(j => j.active && !j.pending);
+    if (activeJobs.length > 0) {
+      jobsHtml += '<div style="font-size:10px;color:#4fc3f7;text-transform:uppercase;margin-bottom:4px;margin-top:6px">Active Jobs</div>';
+      activeJobs.forEach(j => {
+        const slaTimeLeft = j.slaDeadline > 0 ? Math.max(0, j.slaDeadline - state.simTime) : 0;
+        const slaStr = slaTimeLeft > 0 ? ' | SLA: ' + Math.ceil(slaTimeLeft / 3600) + 'h' : '';
+        const slaColor = slaTimeLeft > 0 && slaTimeLeft < 3600 ? '#f44336' : '#888';
+        jobsHtml += `<div class="job-card">
+          <div style="flex:1">
+            <div class="job-name">${j.name}</div>
+            <div style="font-size:10px;color:#888">${j.tflopsReq} TFLOPS | <span class="job-reward">$${j.reward}</span><span style="color:${slaColor}">${slaStr}</span></div>
+            <div class="job-progress"><div class="job-progress-fill" style="width:${j.progress*100}%"></div></div>
+          </div>
+        </div>`;
+      });
+    }
+
+    if (!jobsHtml) {
+      jobsHtml = '<div style="color:#555;font-size:11px">No contracts available</div>';
+    }
+
+    jobsEl.innerHTML = jobsHtml;
   }
 }
 
@@ -3701,13 +4223,49 @@ function setupControls() {
 }
 
 // ============================================================
+// ORIENTATION MODE
+// ============================================================
+function setOrientation(mode) {
+  state.orientationMode = mode;
+  // Update button states
+  ['solar', 'thermal', 'stealth', 'comms'].forEach(m => {
+    const btn = document.getElementById('btn-orient-' + m);
+    if (btn) btn.classList.toggle('active', m === mode);
+  });
+  // Update description
+  const descEl = document.getElementById('orient-desc');
+  const valEl = document.getElementById('val-orientation');
+  if (valEl) valEl.textContent = mode.toUpperCase();
+  if (descEl) {
+    const descs = {
+      solar: 'Panels 100% | Radiator load 40%',
+      thermal: 'Panels 70% | Radiator load 10% | Better cooling',
+      stealth: 'Panels 50% | Radiator load 20% | +30% evasion',
+      comms: 'Panels 80% | Radiator load 30% | +50% bandwidth',
+    };
+    descEl.textContent = descs[mode] || '';
+  }
+  addLog('info', 'Orientation mode: ' + mode.toUpperCase());
+}
+
+function getOrientationModifiers() {
+  switch (state.orientationMode) {
+    case 'thermal': return { panelEff: 0.70, radiatorSunFraction: 0.10, evasionBonus: 0, bwMultiplier: 1.0 };
+    case 'stealth': return { panelEff: 0.50, radiatorSunFraction: 0.20, evasionBonus: 0.30, bwMultiplier: 1.0 };
+    case 'comms':   return { panelEff: 0.80, radiatorSunFraction: 0.30, evasionBonus: 0, bwMultiplier: 1.5 };
+    case 'solar':
+    default:        return { panelEff: 1.00, radiatorSunFraction: 0.40, evasionBonus: 0, bwMultiplier: 1.0 };
+  }
+}
+
+// ============================================================
 // TUTORIAL SYSTEM
 // ============================================================
 const TUTORIAL_STEPS = [
   { title: 'Welcome to Kessler Compute', text: 'You command an orbital datacenter satellite. Balance power, heat, and compute to run AI workloads for profit.' },
   { title: 'Power & Solar', text: 'Your solar panels generate power in sunlight. You\'re in a sun-synchronous orbit with near-constant sunlight \u2014 but radiators still absorb solar heat.' },
   { title: 'Thermal Management', text: 'Heat is your enemy. The Stefan-Boltzmann law governs cooling: P = \u03B5\u03C3AT\u2074. More compute = more heat. If core temp exceeds 390K, your satellite is destroyed.' },
-  { title: 'Compute Jobs', text: 'Jobs appear automatically and your TFLOPS are distributed across them. Complete jobs to earn credits. Speed up time with the controls in the header.' },
+  { title: 'Compute Jobs', text: 'Contract offers appear periodically. You must ACCEPT or DECLINE each one. Accepted jobs have SLA deadlines - fail to complete in time and you pay a penalty. Rivals may steal unclaimed contracts!' },
   { title: 'Tech Tree', text: 'Spend credits on upgrades in the bottom-right panel. Three branches: Military (red), Corporate (blue), Green (green). Each leads to a different victory condition.' },
   { title: 'Combat & Cargo', text: 'Rival satellites orbit nearby. Unlock weapons to attack them \u2014 but kinetic attacks create debris. Contraband cargo offers high rewards with detection risk.' },
   { title: 'Victory', text: 'Win by: earning $500K (Corporate), destroying all rivals (Military), surviving Kessler cascade with a moon base (Green), or reaching $1M with tier 5 tech (Secret). Good luck, Commander!' },
@@ -3792,6 +4350,7 @@ function saveGame() {
       autoTrack: state.autoTrack,
       batteryMode: state.batteryMode,
       uplinkActive: state.uplinkActive,
+      orientationMode: state.orientationMode,
       orbitalAngle: state.orbitalAngle,
       aiTakeoverResolved: state.aiTakeoverResolved,
       aiHelping: state.aiHelping,
@@ -3803,6 +4362,7 @@ function saveGame() {
       debrisWarning: state.debrisWarning,
       radiatorTemp: state.radiatorTemp,
       config: { ...state.config },
+      orbitalShells: state.orbitalShells.map(s => ({ ...s })),
       ownedUpgrades: UPGRADES.filter(u => u.owned).map(u => u.id),
       rivals: state.rivals.map(r => ({
         id: r.id,
@@ -3811,6 +4371,10 @@ function saveGame() {
         disabledUntil: r.disabledUntil,
         computing: r.computing,
         orbitalAngle: r.orbitalAngle,
+        credits: r.credits || 0,
+        tflops: r.tflops || 500,
+        jobsCompleted: r.jobsCompleted || 0,
+        specialization: r.specialization || 'corporate',
       })),
       activeCargo: activeCargo.map(c => ({
         name: c.name,
@@ -3827,6 +4391,9 @@ function saveGame() {
         id: j.id,
         progress: j.progress,
         active: j.active,
+        pending: j.pending || false,
+        expiresAt: j.expiresAt || 0,
+        slaDeadline: j.slaDeadline || 0,
         surveillanceRisk: j.surveillanceRisk || false,
       })),
     };
@@ -3875,6 +4442,7 @@ function loadGame() {
     state.autoTrack = saveData.autoTrack !== undefined ? saveData.autoTrack : true;
     state.batteryMode = saveData.batteryMode || 'auto';
     state.uplinkActive = saveData.uplinkActive !== undefined ? saveData.uplinkActive : true;
+    state.orientationMode = saveData.orientationMode || 'solar';
     state.orbitalAngle = saveData.orbitalAngle || 0;
     state.aiTakeoverResolved = saveData.aiTakeoverResolved || false;
     state.aiHelping = saveData.aiHelping || false;
@@ -3892,6 +4460,11 @@ function loadGame() {
 
     if (saveData.config) {
       state.config = saveData.config;
+    }
+
+    // Restore orbital shells
+    if (saveData.orbitalShells) {
+      state.orbitalShells = saveData.orbitalShells;
     }
 
     // Restore upgrades ownership
@@ -3915,6 +4488,10 @@ function loadGame() {
           rival.disabledUntil = sr.disabledUntil;
           rival.computing = sr.computing;
           rival.orbitalAngle = sr.orbitalAngle;
+          if (sr.credits !== undefined) rival.credits = sr.credits;
+          if (sr.tflops !== undefined) rival.tflops = sr.tflops;
+          if (sr.jobsCompleted !== undefined) rival.jobsCompleted = sr.jobsCompleted;
+          if (sr.specialization) rival.specialization = sr.specialization;
         }
       });
     }
