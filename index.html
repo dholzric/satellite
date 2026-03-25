@@ -462,8 +462,8 @@ input[type="range"]::-webkit-slider-thumb {
     <h1>Kessler Compute</h1>
     <div id="header-stats">
       <div class="stat">
-        <span class="stat-label">ORBIT:</span>
-        <span class="stat-value" id="hud-orbit">600 km SSO</span>
+        <span class="stat-label">FLEET:</span>
+        <span class="stat-value" id="hud-orbit">12 sats | 600 TFLOPS</span>
       </div>
       <div class="stat">
         <span class="stat-label">TIME:</span>
@@ -493,12 +493,31 @@ input[type="range"]::-webkit-slider-thumb {
   <!-- Left Panel - Controls -->
   <div id="left-panel">
     <div class="panel-section">
-      <div class="panel-title">Compute Modules</div>
+      <div class="panel-title">Launch Operations</div>
       <div class="control-row">
-        <label>Active Modules</label>
-        <span class="value" id="val-compute-modules">4 / 4</span>
+        <label>Fleet Size</label>
+        <span class="value" id="val-fleet-size">12 sats</span>
       </div>
-      <input type="range" id="ctrl-compute" min="0" max="4" value="4" step="1">
+      <div class="control-row">
+        <label>Active</label>
+        <span class="value" id="val-fleet-active">12 / 12</span>
+      </div>
+      <div class="control-row">
+        <label>Generation</label>
+        <span class="value" id="val-sat-gen">v1</span>
+      </div>
+      <button class="btn" id="btn-launch-f9" onclick="scheduleLaunch('falcon9')">Launch Falcon 9 (23 sats, $15K)</button>
+      <button class="btn" id="btn-launch-ss" onclick="scheduleLaunch('starship')" style="opacity:0.4" disabled>Launch Starship (60 sats, $25K)</button>
+      <div class="control-row">
+        <label>Fleet Power</label>
+        <span class="value" id="val-fleet-power">100%</span>
+      </div>
+      <input type="range" id="ctrl-fleet-power" min="0" max="100" value="100" step="5">
+      <div id="launch-queue-display" style="font-size:10px;color:#666;margin-top:4px"></div>
+    </div>
+
+    <div class="panel-section">
+      <div class="panel-title">Fleet Compute</div>
       <div class="control-row">
         <label>Clock Speed</label>
         <span class="value" id="val-clock">100%</span>
@@ -734,10 +753,10 @@ input[type="range"]::-webkit-slider-thumb {
 
 <!-- Game Over Overlay -->
 <div id="game-over">
-  <h2 id="gameover-title">SATELLITE LOST</h2>
+  <h2 id="gameover-title">CONSTELLATION LOST</h2>
   <p id="gameover-reason">Core temperature exceeded safe limits</p>
   <p id="gameover-stats"></p>
-  <button class="btn" onclick="location.reload()">RELAUNCH SATELLITE</button>
+  <button class="btn" onclick="location.reload()">RELAUNCH CONSTELLATION</button>
 </div>
 
 <!-- Victory Screen Overlay -->
@@ -884,10 +903,10 @@ const INITIAL_CONFIG = {
   radiatorEmissivity: 0.92, // high-emissivity coating
   radiatorAbsorptivity: 0.15, // low solar absorptivity
 
-  // Compute modules (based on space-rated AI accelerators)
-  computeModules: 4,       // number of compute modules
-  powerPerModule: 2500,    // watts per module at 100% clock
-  tflopsPerModule: 250,    // TFLOPS FP16 per module
+  // Compute (per-satellite baseline specs, constellation scales these)
+  computeModules: 4,       // legacy: number of compute modules (kept for compat)
+  powerPerModule: 2500,    // legacy: watts per module at 100% clock
+  tflopsPerModule: 250,    // legacy: TFLOPS FP16 per module
   heatFractionCompute: 0.95, // 95% of compute power becomes heat
 
   // System power (avionics, comms, attitude control, etc.)
@@ -935,7 +954,27 @@ let state = {
   autoTrack: true,
   panelDegradation: 0,     // 0-1, accumulated degradation
 
-  // Compute
+  // Constellation
+  constellation: {
+    totalSats: 12,          // starting small (1 Falcon 9 load)
+    activeSats: 12,         // operational satellites
+    failedSats: 0,          // dead/failed sats
+    satGeneration: 1,       // v1=basic, v2=upgraded, v3=advanced
+    tflopsPerSat: 50,       // TFLOPS per satellite (v1 class)
+    powerPerSat: 2500,      // watts per sat
+    launchQueue: [],        // pending launches
+    totalLaunched: 12,      // lifetime total
+    avgSatHealth: 100,      // average health %
+    manufacturingRate: 0,   // sats produced per day
+  },
+  launchVehicles: {
+    falcon9: { available: true, satsPerLaunch: 23, cost: 15000, successRate: 0.98, cooldownDays: 3 },
+    starship: { available: false, satsPerLaunch: 60, cost: 25000, successRate: 0.92, cooldownDays: 1 },
+  },
+  lastLaunchTime: 0,
+  fleetPower: 100,           // percentage of fleet active (0-100)
+
+  // Compute (legacy fields kept for compatibility)
   activeModules: 4,
   maxModules: 4,
   clockSpeed: 100,         // percentage (100 = nominal)
@@ -1139,7 +1178,10 @@ function computeTotalPowerDraw() {
   // CMOS power: P = C·V²·f. With DVFS, V scales with f, so P ∝ f³ approximately.
   // Use f^2.5 as a practical compromise (accounts for leakage current floor)
   const overclockFactor = Math.pow(clockFactor, 2.5);
-  const computePower = state.activeModules * state.config.powerPerModule * overclockFactor;
+  const fleetFraction = state.fleetPower / 100;
+  // Constellation-based power: activeSats * powerPerSat * overclockFactor * fleetPower%
+  const effectiveActiveSats = state.constellation.activeSats * fleetFraction;
+  const computePower = effectiveActiveSats * state.constellation.powerPerSat * overclockFactor;
   const systemPower = state.config.systemPower;
   const laserPower = state.uplinkActive ? state.config.laserLinkPower : 0;
   return { computePower, systemPower, laserPower, total: computePower + systemPower + laserPower };
@@ -1153,7 +1195,10 @@ function computeTFLOPS() {
   // Performance scales linearly with clock (until thermal throttle)
   const thermalThrottle = state.coreTemp > 350 ? Math.max(0, 1 - (state.coreTemp - 350) / 40) : 1;
   const healthFactor = state.chipHealth / 100;
-  const baseTFLOPS = state.activeModules * state.config.tflopsPerModule * clockFactor * thermalThrottle * healthFactor;
+  const fleetFraction = state.fleetPower / 100;
+  // Constellation-based: activeSats * tflopsPerSat * clock * throttle * health * fleetPower
+  const baseTFLOPS = state.constellation.activeSats * state.constellation.tflopsPerSat *
+    clockFactor * thermalThrottle * healthFactor * fleetFraction;
 
   // Orbital shell bonuses: sum of compute bonuses from all active shells
   let shellBonus = 0;
@@ -1261,14 +1306,15 @@ function updateSimulation(dtReal) {
   state.batteryLevel = Math.max(0, Math.min(state.batteryLevel, state.config.batteryCapacity));
   state.netPower = powerBalance;
 
-  // If battery is empty and power balance is negative → forced shutdown of modules
+  // If battery is empty and power balance is negative → forced reduction of fleet power
   if (state.batteryLevel <= 0 && powerBalance < 0) {
-    if (state.activeModules > 0) {
-      state.activeModules = Math.max(0, state.activeModules - 1);
-      document.getElementById('ctrl-compute').value = state.activeModules;
-      addLog('warn', 'Power deficit! Shutting down compute module');
+    if (state.fleetPower > 0) {
+      state.fleetPower = Math.max(0, state.fleetPower - 5);
+      const fpSlider = document.getElementById('ctrl-fleet-power');
+      if (fpSlider) fpSlider.value = state.fleetPower;
+      addLog('warn', 'Power deficit! Reducing fleet power to ' + state.fleetPower + '%');
     }
-    if (state.activeModules === 0 && state.batteryLevel <= 0) {
+    if (state.fleetPower === 0 && state.batteryLevel <= 0) {
       // Total power loss
       triggerGameOver('Complete power failure - all systems offline');
       return;
@@ -1276,8 +1322,10 @@ function updateSimulation(dtReal) {
   }
 
   // --- Heat Generation ---
-  // Heat = power consumed (consistent with DVFS power scaling in computeTotalPowerDraw)
-  const computeHeat = powerDraw.computePower * state.config.heatFractionCompute;
+  // Heat per satellite = (total compute power / activeSats) * heatFraction
+  // Thermal model represents average satellite in constellation
+  const effectiveActiveSats = Math.max(1, state.constellation.activeSats * (state.fleetPower / 100));
+  const computeHeat = (powerDraw.computePower / effectiveActiveSats) * state.config.heatFractionCompute;
   const systemHeat = state.config.systemPower * 0.8; // 80% of system power becomes heat
   const solarAbsorbed = computeSolarHeatInput(state.config.solarPanelArea, !state.inEclipse, effectivePanelAngle);
   const earthIR = computeEarthIRInput(state.config.altitude);
@@ -1331,7 +1379,8 @@ function updateSimulation(dtReal) {
   // Single Event Upsets (SEUs) - bit flips from radiation
   // Unhardened 80GB HBM: ~10^-7 errors/bit/day = ~64,000 errors/day
   // With ECC: most corrected, but some cause compute errors
-  const memoryBits = state.activeModules * 80e9 * 8; // 80GB HBM per module
+  const effectiveSatsForSEU = state.constellation.activeSats * (state.fleetPower / 100);
+  const memoryBits = effectiveSatsForSEU * 80e9 * 8; // 80GB HBM per satellite
   const seuBaseRate = 1e-7 / 86400; // errors per bit per second
   let seuMultiplier = 1;
   if (state.inSAA) seuMultiplier *= 10;
@@ -1374,6 +1423,12 @@ function updateSimulation(dtReal) {
   // --- Compute Market ---
   updateMarketPrice(dt);
 
+  // --- Process Launches ---
+  processLaunches(dt);
+
+  // --- Satellite Attrition ---
+  processSatelliteAttrition(dt);
+
   // --- Process Jobs ---
   processJobs(dt);
 
@@ -1404,6 +1459,138 @@ function updateSimulation(dtReal) {
   checkVictoryConditions();
 
   // Sanctions effect is applied at job payout in processJobs()
+}
+
+// ============================================================
+// CONSTELLATION LAUNCH SYSTEM
+// ============================================================
+function scheduleLaunch(vehicleType) {
+  const vehicle = state.launchVehicles[vehicleType];
+  if (!vehicle) {
+    addLog('warn', 'Unknown launch vehicle: ' + vehicleType);
+    return;
+  }
+  if (!vehicle.available) {
+    addLog('warn', vehicleType === 'starship' ? 'Starship not yet unlocked - purchase Starship-Class Vehicle upgrade' : 'Vehicle not available');
+    return;
+  }
+  if (state.credits < vehicle.cost) {
+    addLog('warn', `Insufficient credits for launch ($${vehicle.cost.toLocaleString()} needed, have $${state.credits.toLocaleString()})`);
+    return;
+  }
+  // Check cooldown
+  const cooldownSeconds = vehicle.cooldownDays * 86400;
+  if (state.lastLaunchTime > 0 && (state.simTime - state.lastLaunchTime) < cooldownSeconds) {
+    const remaining = cooldownSeconds - (state.simTime - state.lastLaunchTime);
+    addLog('warn', `Launch pad cooling down - ${(remaining / 3600).toFixed(1)}h remaining`);
+    return;
+  }
+  // Deduct cost
+  state.credits -= vehicle.cost;
+  state.lastLaunchTime = state.simTime;
+
+  const vehicleName = vehicleType === 'falcon9' ? 'Falcon 9' : 'Starship';
+  const launchEntry = {
+    vehicle: vehicleType,
+    vehicleName: vehicleName,
+    satsCount: vehicle.satsPerLaunch,
+    launchTime: state.simTime + 3600 * 6, // 6 hours prep time
+    status: 'preparing',
+    successRate: vehicle.successRate,
+    generation: state.constellation.satGeneration,
+  };
+  state.constellation.launchQueue.push(launchEntry);
+  addLog('info', `${vehicleName} launch scheduled with ${vehicle.satsPerLaunch} datacenter satellites - T-6h to liftoff (-$${vehicle.cost.toLocaleString()})`);
+  SoundEngine.play('click');
+}
+
+function processLaunches(dt) {
+  for (let i = state.constellation.launchQueue.length - 1; i >= 0; i--) {
+    const launch = state.constellation.launchQueue[i];
+    if (state.simTime >= launch.launchTime) {
+      // Resolve launch
+      const roll = Math.random();
+      if (roll < launch.successRate) {
+        // Full success
+        state.constellation.totalSats += launch.satsCount;
+        state.constellation.activeSats += launch.satsCount;
+        state.constellation.totalLaunched += launch.satsCount;
+        addLog('success', `${launch.vehicleName} launch SUCCESS! ${launch.satsCount} v${launch.generation} satellites deployed to orbit. Fleet: ${state.constellation.totalSats} sats`);
+        SoundEngine.play('upgrade');
+      } else if (roll < launch.successRate + 0.05) {
+        // Partial failure (5% chance beyond failure threshold)
+        const deployed = Math.floor(launch.satsCount / 2);
+        state.constellation.totalSats += deployed;
+        state.constellation.activeSats += deployed;
+        state.constellation.totalLaunched += deployed;
+        state.constellation.failedSats += launch.satsCount - deployed;
+        addLog('warn', `${launch.vehicleName} PARTIAL FAILURE! Only ${deployed}/${launch.satsCount} satellites reached orbit. ${launch.satsCount - deployed} lost during deployment.`);
+        SoundEngine.play('warning');
+      } else {
+        // Total failure
+        state.constellation.failedSats += launch.satsCount;
+        addLog('error', `${launch.vehicleName} LAUNCH FAILURE! Vehicle lost during ascent - ${launch.satsCount} satellites destroyed! $${state.launchVehicles[launch.vehicle].cost.toLocaleString()} wasted!`);
+        SoundEngine.play('explosion');
+        // Small debris increase from failed launch
+        state.orbitalDebrisLevel = Math.min(100, state.orbitalDebrisLevel + 1);
+      }
+      state.constellation.launchQueue.splice(i, 1);
+    }
+  }
+}
+
+function processSatelliteAttrition(dt) {
+  if (state.constellation.activeSats <= 0) return;
+
+  // Base failure rate: 0.5% per year per sat
+  const baseFailureRatePerSecond = 0.005 / (365.25 * 86400);
+  // Debris-driven losses: orbitalDebrisLevel * 0.0001 per sat per day
+  const debrisFailureRatePerSecond = (state.orbitalDebrisLevel * 0.0001) / 86400;
+  // Total failure probability per sat per dt
+  let failureRate = baseFailureRatePerSecond + debrisFailureRatePerSecond;
+  // When avgSatHealth < 50, failures accelerate (2x at 25% health, 4x at 0%)
+  if (state.constellation.avgSatHealth < 50) {
+    failureRate *= 1 + (50 - state.constellation.avgSatHealth) / 25;
+  }
+
+  const failProb = failureRate * dt;
+  let satsFailed = 0;
+  // Use expected value for large fleets to avoid rolling per-sat
+  if (state.constellation.activeSats > 20) {
+    const expected = state.constellation.activeSats * failProb;
+    satsFailed = Math.floor(expected);
+    if (Math.random() < (expected - satsFailed)) satsFailed++;
+  } else {
+    for (let i = 0; i < state.constellation.activeSats; i++) {
+      if (Math.random() < failProb) satsFailed++;
+    }
+  }
+
+  if (satsFailed > 0) {
+    satsFailed = Math.min(satsFailed, state.constellation.activeSats);
+    state.constellation.activeSats -= satsFailed;
+    state.constellation.failedSats += satsFailed;
+    // Failed sats become debris
+    state.orbitalDebrisLevel = Math.min(100, state.orbitalDebrisLevel + satsFailed * 0.1);
+    if (satsFailed >= 3) {
+      addLog('warn', `${satsFailed} satellites failed! Fleet: ${state.constellation.activeSats}/${state.constellation.totalSats} active`);
+    } else if (satsFailed > 0) {
+      addLog('info', `Satellite failure - ${satsFailed} sat(s) lost. Fleet: ${state.constellation.activeSats}/${state.constellation.totalSats}`);
+    }
+  }
+
+  // Radiation degradation of fleet health
+  const degradeRate = 0.01 / (365.25 * 86400); // 1% per year base
+  let degradeMultiplier = 1;
+  if (state.solarFlareActive) degradeMultiplier += state.solarFlareIntensity * 3;
+  if (state.inSAA) degradeMultiplier += 0.5;
+  state.constellation.avgSatHealth -= degradeRate * degradeMultiplier * dt * 100;
+  state.constellation.avgSatHealth = Math.max(0, Math.min(100, state.constellation.avgSatHealth));
+
+  // Game over: entire constellation lost
+  if (state.constellation.activeSats <= 0 && state.constellation.totalSats > 0) {
+    triggerGameOver('Entire satellite constellation lost - no operational spacecraft remain');
+  }
 }
 
 // ============================================================
@@ -1746,8 +1933,10 @@ const TECH_TREE = {
   shared: [
     { id: 'tier0_reuse', tier: 0, name: 'Reusable Launch', cost: 0, desc: 'Basic orbital capability', owned: true, requires: [],
       apply: () => {} },
-    { id: 'tier1_starship', tier: 1, name: 'Starship-Class Vehicle', cost: 1500, desc: 'Mass to orbit. Unlocks 100+ sat constellations', requires: ['tier0_reuse'],
-      apply: (c) => { c.solarPanelArea += 20; c.computeModules += 1; state.maxModules += 1; } },
+    { id: 'tier1_starship', tier: 1, name: 'Starship-Class Vehicle', cost: 1500, desc: 'Unlocks Starship launches (60 sats/flight). Enables mega constellations.', requires: ['tier0_reuse'],
+      apply: (c) => { c.solarPanelArea += 20; state.launchVehicles.starship.available = true;
+        const ssBtn = document.getElementById('btn-launch-ss'); if (ssBtn) { ssBtn.disabled = false; ssBtn.style.opacity = '1'; }
+      } },
     { id: 'tier1_ground', tier: 1, name: 'Launch Site Expansion', cost: 1500, desc: 'Drone ship catches, local politics', requires: ['tier0_reuse'],
       apply: (c) => { c.batteryCapacity += 5000; } },
   ],
@@ -1782,26 +1971,25 @@ const TECH_TREE = {
 
   // CORPORATE BRANCH (blue)
   corporate: [
-    { id: 'corp_t2_datacenter', tier: 2, name: 'Orbital Data Centers', cost: 5000, desc: 'Modular GPU racks, active cooling radiators', requires: ['tier1_starship'], branch: 'corporate',
-      apply: (c) => { c.computeModules += 1; state.maxModules += 1; c.radiatorArea += 20; document.getElementById('ctrl-compute').max = state.maxModules; } },
+    { id: 'corp_t2_datacenter', tier: 2, name: 'Orbital Data Centers', cost: 5000, desc: 'Upgraded GPU racks: +15 TFLOPS/sat, +20m² radiators', requires: ['tier1_starship'], branch: 'corporate',
+      apply: (c) => { state.constellation.tflopsPerSat += 15; c.radiatorArea += 20; } },
     { id: 'corp_t2_market', tier: 2, name: 'Constellation Market', cost: 7000, desc: 'Real-time compute auction. Dynamic pricing.', requires: ['tier1_ground'], branch: 'corporate',
       apply: (c) => { c._hasMarket = true; } },
-    { id: 'corp_t3_megaconst', tier: 3, name: 'Mega Constellation', cost: 18000, desc: 'Starship-train assembly. +2 compute modules, low-latency mesh.', requires: ['corp_t2_datacenter'], branch: 'corporate',
-      apply: (c) => { c.computeModules += 2; state.maxModules += 2; c.tflopsPerModule = 300; document.getElementById('ctrl-compute').max = state.maxModules; } },
+    { id: 'corp_t3_megaconst', tier: 3, name: 'Mega Constellation', cost: 18000, desc: 'Unlocks v2 generation satellites. New launches deploy v2 (100 TFLOPS/sat).', requires: ['corp_t2_datacenter'], branch: 'corporate',
+      apply: (c) => { state.constellation.satGeneration = 2; state.constellation.tflopsPerSat = 100; } },
     { id: 'corp_t3_geo', tier: 3, name: 'GEO Relay Station', cost: 20000,
-      desc: 'Geostationary orbit: always-on but higher latency. +30% job capacity.',
+      desc: 'Geostationary orbit: always-on but higher latency. +30% compute bonus.',
       requires: ['corp_t2_datacenter'], branch: 'corporate',
       apply: (c) => {
         state.orbitalShells.push({ name: 'GEO', altitude: 35786, active: true, computeBonus: 0.7, latencyBonus: 0.5, eclipseRisk: 0.04, debrisRisk: 0.2 });
-        c.computeModules += 1; state.maxModules += 1;
-        document.getElementById('ctrl-compute').max = state.maxModules;
+        state.constellation.tflopsPerSat += 10;
       } },
     { id: 'corp_t3_antipiracy', tier: 3, name: 'Anti-Piracy Encryption', cost: 10000, desc: 'Encrypted cores, lag-spike detection. Blocks compute theft.', requires: ['corp_t2_market'], branch: 'corporate',
       apply: (c) => { c._antiPiracy = true; } },
     { id: 'corp_t4_asteroid', tier: 4, name: 'Asteroid Mining', cost: 35000, desc: 'Propellant + rare earth mining. Cheaper refuels.', requires: ['corp_t3_megaconst'], branch: 'corporate',
       apply: (c) => { c._miningIncome = (c._miningIncome || 0) + 500; } },
-    { id: 'corp_t4_moonbase', tier: 4, name: 'Lunar Cold Storage', cost: 45000, desc: 'Low-gravity compute racks. Protected AI training.', requires: ['corp_t3_megaconst'], branch: 'corporate',
-      apply: (c) => { c.computeModules += 3; state.maxModules += 3; c.tflopsPerModule = 400; c._moonBase = true; document.getElementById('ctrl-compute').max = state.maxModules; } },
+    { id: 'corp_t4_moonbase', tier: 4, name: 'Lunar Cold Storage', cost: 45000, desc: 'Unlocks v3 generation (200 TFLOPS/sat). Protected AI training.', requires: ['corp_t3_megaconst'], branch: 'corporate',
+      apply: (c) => { state.constellation.satGeneration = 3; state.constellation.tflopsPerSat = 200; c._moonBase = true; } },
     { id: 'corp_t4_tourism', tier: 4, name: 'Space Tourism', cost: 20000, desc: 'VIP passengers = bonus cash + spy risk', requires: ['corp_t3_antipiracy'], branch: 'corporate',
       apply: (c) => { c._tourism = true; c._miningIncome = (c._miningIncome || 0) + 200; } },
     { id: 'corp_t5_monopoly', tier: 5, name: 'Global Compute Exchange', cost: 100000, desc: 'You set prices. Rivals pay tribute in FLOPS.', requires: ['corp_t4_moonbase', 'corp_t4_asteroid'], branch: 'corporate',
@@ -2115,10 +2303,15 @@ function processRivals(dt) {
           if (state.shieldHealth <= 0) addLog('error', 'SHIELD DEPLETED! No more debris protection');
         }
         if (damage > 3) {
+          // Debris destroys random sats from constellation
+          const satsHit = Math.min(state.constellation.activeSats, Math.floor(1 + damage / 5));
+          if (satsHit > 0) {
+            state.constellation.activeSats -= satsHit;
+            state.constellation.failedSats += satsHit;
+          }
           state.config.radiatorArea *= (1 - damage / 200);
-          state.chipHealth -= damage * 0.3;
           SoundEngine.play('explosion');
-          addLog('error', `DEBRIS STRIKE! Radiator -${damage.toFixed(1)}%, chips -${(damage*0.3).toFixed(1)}%${shieldActive ? `, shield ${state.shieldHealth.toFixed(0)}%` : ''}`);
+          addLog('error', `DEBRIS STRIKE! ${satsHit} sat(s) destroyed, radiator -${damage.toFixed(1)}%${shieldActive ? `, shield ${state.shieldHealth.toFixed(0)}%` : ''}. Fleet: ${state.constellation.activeSats}/${state.constellation.totalSats}`);
         } else {
           addLog('warn', `Minor debris impact - ${shieldActive ? 'shields absorbed' : 'glancing blow'}`);
         }
@@ -2394,13 +2587,18 @@ function executeRivalAttack(rival) {
     state.shieldHealth = Math.max(0, state.shieldHealth - damage * 3);
   }
 
-  // Rival laser dazzle
-  if (Math.random() < 0.6) {
+  // Rival attack - destroys satellites in constellation
+  const satsDestroyed = Math.min(state.constellation.activeSats, Math.floor(2 + Math.random() * 4));
+  if (satsDestroyed > 0) {
+    state.constellation.activeSats -= satsDestroyed;
+    state.constellation.failedSats += satsDestroyed;
+    state.orbitalDebrisLevel = Math.min(100, state.orbitalDebrisLevel + satsDestroyed * 0.2);
+    addLog('error', `${rival.name} attack destroyed ${satsDestroyed} satellites! Fleet: ${state.constellation.activeSats}/${state.constellation.totalSats}`);
+  }
+  // Also some system damage
+  if (Math.random() < 0.4) {
     state.config.solarCellEfficiency *= (1 - damage / 500);
-    addLog('error', `${rival.name} laser damaged solar panels! Efficiency -${(damage/5).toFixed(1)}%`);
-  } else {
-    state.chipHealth -= damage * 0.5;
-    addLog('error', `${rival.name} attack damaged compute chips! Health -${(damage*0.5).toFixed(1)}%`);
+    addLog('error', `${rival.name} laser damaged fleet solar panels! Efficiency -${(damage/5).toFixed(1)}%`);
   }
 }
 
@@ -2455,8 +2653,8 @@ const CARGO_TYPES = [
     desc: 'Stolen training datasets. Boosts compute jobs but legally toxic.',
     penalty: 30000,
     effect: () => {
-      state.config.tflopsPerModule *= 1.15;
-      addLog('success', 'Classified datasets loaded - compute efficiency +15%');
+      state.constellation.tflopsPerSat = Math.floor(state.constellation.tflopsPerSat * 1.15);
+      addLog('success', 'Classified datasets loaded - compute efficiency +15% per satellite');
     } },
 ];
 
@@ -2680,7 +2878,7 @@ function triggerVictory(type, subtitle, description, color) {
   typeEl.textContent = subtitle;
   typeEl.style.color = color;
   descEl.textContent = description;
-  statsEl.textContent = 'Survived ' + state.day + ' days | Earned $' + state.totalCreditsEarned.toLocaleString() +
+  statsEl.textContent = 'Survived ' + state.day + ' days | Fleet: ' + state.constellation.activeSats + '/' + state.constellation.totalLaunched + ' sats | Earned $' + state.totalCreditsEarned.toLocaleString() +
     ' | Completed ' + state.completedJobs + ' jobs | Debris: ' + state.orbitalDebrisLevel.toFixed(0) + '%';
 
   // Mars Exodus special background
@@ -2920,10 +3118,10 @@ function formatWatts(w) {
 function triggerGameOver(reason) {
   state.gameOver = true;
   state.gameOverReason = reason;
-  document.getElementById('gameover-title').textContent = 'SATELLITE LOST';
+  document.getElementById('gameover-title').textContent = 'CONSTELLATION LOST';
   document.getElementById('gameover-reason').textContent = reason;
   document.getElementById('gameover-stats').textContent =
-    `Survived ${state.day} days | Earned $${state.totalCreditsEarned.toLocaleString()} | Completed ${state.completedJobs} jobs`;
+    `Survived ${state.day} days | Fleet: ${state.constellation.activeSats}/${state.constellation.totalLaunched} sats | Earned $${state.totalCreditsEarned.toLocaleString()} | Completed ${state.completedJobs} jobs`;
   document.getElementById('game-over').classList.add('show');
   addLog('error', 'MISSION FAILED: ' + reason);
 }
@@ -3322,8 +3520,8 @@ function drawScene() {
     }
   }
 
-  // Draw satellite
-  drawSatellite(satX, satY, satAngle);
+  // Draw constellation (fleet of satellites along orbit)
+  drawConstellation(cx, cy, orbitRadius, satAngle);
 
   // Moon Base / Lagrange Observatory visualization
   if (state.config._moonBase || state.config._lagrangeBase) {
@@ -3481,7 +3679,7 @@ function drawScene() {
   ctx.fillStyle = '#4fc3f7';
   ctx.font = '11px monospace';
   const orbitName = state.config.orbitType === 'sun-sync' ? 'Sun-Synchronous Dawn/Dusk' : 'Standard LEO';
-  ctx.fillText(`${orbitName} | ${state.config.altitude} km | β=${state.config.betaAngle}°`, 10, 20);
+  ctx.fillText(`${orbitName} | ${state.config.altitude} km | Fleet: ${state.constellation.activeSats}/${state.constellation.totalSats} sats (v${state.constellation.satGeneration})`, 10, 20);
   ctx.fillText(`Orbital Period: ${(state.orbitalPeriod / 60).toFixed(1)} min | Eclipse: ${(state.eclipseFraction * 100).toFixed(1)}%`, 10, 35);
   ctx.fillStyle = state.inEclipse ? '#f44336' : '#66bb6a';
   ctx.fillText(state.inEclipse ? '● IN ECLIPSE' : '● CONTINUOUS SUNLIGHT', 10, 50);
@@ -3492,6 +3690,23 @@ function drawScene() {
   }
 
   let alertY = 85;
+
+  // Launch status
+  if (state.constellation.launchQueue.length > 0) {
+    for (const launch of state.constellation.launchQueue) {
+      const timeLeft = Math.max(0, launch.launchTime - state.simTime);
+      const blink = Math.sin(state.simTime * 3) > 0 ? 1 : 0.5;
+      ctx.fillStyle = `rgba(255, 200, 50, ${blink})`;
+      ctx.font = 'bold 12px monospace';
+      if (timeLeft < 600) {
+        ctx.fillText(`LAUNCH IMMINENT: ${launch.vehicleName} T-${Math.ceil(timeLeft/60)}m (${launch.satsCount} sats)`, 10, alertY);
+      } else {
+        ctx.fillText(`LAUNCH SCHEDULED: ${launch.vehicleName} T-${(timeLeft/3600).toFixed(1)}h (${launch.satsCount} sats)`, 10, alertY);
+      }
+      alertY += 18;
+    }
+  }
+
   if (state.inSAA) {
     ctx.fillStyle = '#ff9800';
     ctx.font = 'bold 12px monospace';
@@ -3569,27 +3784,102 @@ function drawScene() {
   ctx.fillText(`T = ${state.coreTemp.toFixed(0)}K → ${formatWatts(state.heatRadiated)} radiated`, w - 260, formulaY + 42);
 }
 
+function drawConstellation(cx, cy, orbitRadius, primaryAngle) {
+  // Draw constellation of satellites spread around orbit
+  const totalVisible = Math.min(state.constellation.activeSats, 50); // cap for performance
+  const healthFrac = state.constellation.avgSatHealth / 100;
+
+  for (let i = 0; i < totalVisible; i++) {
+    const frac = i / Math.max(1, totalVisible);
+    const satAngle = (primaryAngle + frac * Math.PI * 2) % (Math.PI * 2);
+    const sx = cx + orbitRadius * Math.cos(satAngle);
+    const sy = cy + orbitRadius * Math.sin(satAngle);
+
+    // Size and brightness based on health and generation
+    const gen = state.constellation.satGeneration;
+    const dotRadius = gen >= 3 ? 3.5 : gen >= 2 ? 3 : 2.5;
+    const baseAlpha = 0.3 + healthFrac * 0.5;
+
+    // Color: cyan tint modulated by health, redder when unhealthy
+    const r = Math.floor(79 + (1 - healthFrac) * 176);
+    const g = Math.floor(195 * healthFrac);
+    const b = Math.floor(247 * healthFrac + 50 * (1 - healthFrac));
+
+    // Blinking compute activity
+    const blinkPhase = Math.sin(state.simTime * 3 + i * 2.1);
+    const alpha = baseAlpha + blinkPhase * 0.1;
+
+    ctx.fillStyle = `rgba(${r},${g},${b},${alpha})`;
+    ctx.beginPath();
+    ctx.arc(sx, sy, dotRadius, 0, Math.PI * 2);
+    ctx.fill();
+
+    // Tiny solar panel lines for each sat
+    ctx.strokeStyle = `rgba(${r},${g},${b},${alpha * 0.6})`;
+    ctx.lineWidth = 0.8;
+    ctx.beginPath();
+    ctx.moveTo(sx - 5, sy);
+    ctx.lineTo(sx + 5, sy);
+    ctx.stroke();
+  }
+
+  // Draw the primary (flagship) satellite larger at primaryAngle
+  const flagX = cx + orbitRadius * Math.cos(primaryAngle);
+  const flagY = cy + orbitRadius * Math.sin(primaryAngle);
+  drawSatellite(flagX, flagY, primaryAngle);
+
+  // Constellation label
+  ctx.fillStyle = '#4fc3f7';
+  ctx.font = '10px monospace';
+  ctx.textAlign = 'center';
+  const genLabel = 'v' + state.constellation.satGeneration;
+  ctx.fillText(`CONSTELLATION: ${state.constellation.activeSats} sats (${genLabel})`, cx, cy - orbitRadius - 15);
+  ctx.textAlign = 'left';
+
+  // Draw pending launches (animated dots appearing)
+  for (const launch of state.constellation.launchQueue) {
+    const timeToLaunch = launch.launchTime - state.simTime;
+    if (timeToLaunch > 0 && timeToLaunch < 3600) {
+      // Launch imminent - show blinking indicator at "launch pad" (bottom of orbit)
+      const launchAngle = Math.PI * 1.5; // bottom
+      const lx = cx + (orbitRadius - 20) * Math.cos(launchAngle);
+      const ly = cy + (orbitRadius - 20) * Math.sin(launchAngle);
+      const blink = Math.sin(state.simTime * 5) * 0.5 + 0.5;
+      ctx.fillStyle = `rgba(255, 200, 50, ${blink})`;
+      ctx.beginPath();
+      ctx.arc(lx, ly, 4, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.fillStyle = `rgba(255, 200, 50, 0.7)`;
+      ctx.font = '9px monospace';
+      ctx.textAlign = 'center';
+      ctx.fillText(`LAUNCH T-${Math.ceil(timeToLaunch / 60)}m`, lx, ly + 14);
+      ctx.textAlign = 'left';
+    }
+  }
+}
+
 function drawSatellite(x, y, angle) {
   ctx.save();
   ctx.translate(x, y);
 
-  // Megastructure scaling based on module count
-  const mods = state.maxModules;
-  const bodyW = 20 + Math.max(0, mods - 4) * 4;
+  // Scale flagship satellite based on constellation size
+  const constellationScale = Math.min(2, 1 + state.constellation.totalSats / 200);
+  const bodyW = Math.floor(20 * constellationScale);
   const bodyH = 14;
-  const panelW = 35 + Math.max(0, mods - 4) * 5;
+  const panelW = Math.floor(35 * constellationScale);
   const panelH = 10;
 
-  // Determine structure type label
+  // Determine structure type label based on constellation size
   let structureLabel = 'SAT-DC1';
-  if (mods >= 10) structureLabel = 'ORBITAL STATION';
-  else if (mods >= 8) structureLabel = 'STARSHIP TRAIN';
-  else if (mods >= 6) structureLabel = 'DUAL-SAT CLUSTER';
+  const totalSats = state.constellation.totalSats;
+  if (totalSats >= 500) structureLabel = 'ORBITAL STATION';
+  else if (totalSats >= 200) structureLabel = 'MEGA CONSTELLATION';
+  else if (totalSats >= 60) structureLabel = 'SAT CLUSTER';
 
   // Heat glow effect: when coreTemp > 320K, draw a soft orange/red glow around the satellite body
   if (state.coreTemp > 320) {
     const glowIntensity = Math.min(1, (state.coreTemp - 320) / 70);
-    const glowRadius = 25 + glowIntensity * 15 + Math.max(0, mods - 4) * 3;
+    const glowRadius = 25 + glowIntensity * 15;
     const r = Math.min(255, 200 + glowIntensity * 55);
     const g = Math.max(0, 120 - glowIntensity * 120);
     const b = 0;
@@ -3607,7 +3897,7 @@ function drawSatellite(x, y, angle) {
   if (state.shieldHealth > 0) {
     const shieldAlpha = 0.1 + (state.shieldHealth / 100) * 0.25;
     const shieldPulse = Math.sin(state.simTime * 1.5) * 0.05;
-    const shieldRadius = 28 + (state.config._shieldLevel === 2 ? 8 : 0) + Math.max(0, mods - 4) * 3;
+    const shieldRadius = 28 + (state.config._shieldLevel === 2 ? 8 : 0);
     ctx.strokeStyle = `rgba(80, 180, 255, ${shieldAlpha + shieldPulse})`;
     ctx.lineWidth = 1.5;
     ctx.beginPath();
@@ -3625,131 +3915,18 @@ function drawSatellite(x, y, angle) {
     ctx.fill();
   }
 
-  // === MEGASTRUCTURE MODES ===
+  // Flagship satellite body (represents command sat of constellation)
+  ctx.fillStyle = state.coreTemp > 350 ? '#ff6b35' : state.coreTemp > 330 ? '#ffa726' : '#78909c';
+  ctx.strokeStyle = '#b0bec5';
+  ctx.lineWidth = 1;
+  ctx.fillRect(-bodyW/2, -bodyH/2, bodyW, bodyH);
+  ctx.strokeRect(-bodyW/2, -bodyH/2, bodyW, bodyH);
 
-  if (mods >= 10) {
-    // ORBITAL STATION: ring structure with spinning dots
-    const ringRadius = bodyW * 0.6;
-    const bodyColor = state.coreTemp > 350 ? '#ff6b35' : state.coreTemp > 330 ? '#ffa726' : '#78909c';
-
-    // Central hub
-    ctx.fillStyle = bodyColor;
-    ctx.strokeStyle = '#b0bec5';
-    ctx.lineWidth = 1;
-    ctx.beginPath();
-    ctx.arc(0, 0, 8, 0, Math.PI * 2);
-    ctx.fill();
-    ctx.stroke();
-
-    // Outer ring
-    ctx.strokeStyle = '#b0bec5';
-    ctx.lineWidth = 2;
-    ctx.beginPath();
-    ctx.arc(0, 0, ringRadius, 0, Math.PI * 2);
-    ctx.stroke();
-
-    // Ring fill (thin)
-    ctx.strokeStyle = bodyColor;
-    ctx.lineWidth = 4;
-    ctx.beginPath();
-    ctx.arc(0, 0, ringRadius, 0, Math.PI * 2);
-    ctx.stroke();
-
-    // Spokes connecting hub to ring
-    ctx.strokeStyle = 'rgba(176,190,197,0.5)';
-    ctx.lineWidth = 1;
-    for (let i = 0; i < 4; i++) {
-      const spokeAngle = (i / 4) * Math.PI * 2 + state.simTime * 0.3;
-      ctx.beginPath();
-      ctx.moveTo(Math.cos(spokeAngle) * 8, Math.sin(spokeAngle) * 8);
-      ctx.lineTo(Math.cos(spokeAngle) * ringRadius, Math.sin(spokeAngle) * ringRadius);
-      ctx.stroke();
-    }
-
-    // Spinning habitat dots on the ring
-    for (let i = 0; i < 8; i++) {
-      const dotAngle = (i / 8) * Math.PI * 2 + state.simTime * 0.5;
-      const dx = Math.cos(dotAngle) * ringRadius;
-      const dy = Math.sin(dotAngle) * ringRadius;
-      const blinkPhase = Math.sin(state.simTime * 4 + i * 0.8);
-      ctx.fillStyle = `rgba(0, 255, 100, ${0.5 + blinkPhase * 0.5})`;
-      ctx.beginPath();
-      ctx.arc(dx, dy, 2, 0, Math.PI * 2);
-      ctx.fill();
-    }
-
-  } else if (mods >= 8) {
-    // STARSHIP TRAIN: 3 bodies in a row
-    const bodyColor = state.coreTemp > 350 ? '#ff6b35' : state.coreTemp > 330 ? '#ffa726' : '#78909c';
-    const segW = bodyW / 3 - 2;
-    for (let s = 0; s < 3; s++) {
-      const sx = (s - 1) * (segW + 4);
-      ctx.fillStyle = bodyColor;
-      ctx.strokeStyle = '#b0bec5';
-      ctx.lineWidth = 1;
-      ctx.fillRect(sx - segW/2, -bodyH/2, segW, bodyH);
-      ctx.strokeRect(sx - segW/2, -bodyH/2, segW, bodyH);
-    }
-    // Docking connectors between segments
-    ctx.strokeStyle = '#ffd700';
-    ctx.lineWidth = 1.5;
-    for (let s = 0; s < 2; s++) {
-      const cx1 = (s - 1) * (segW + 4) + segW/2;
-      const cx2 = (s) * (segW + 4) - segW/2;
-      ctx.beginPath();
-      ctx.moveTo(cx1, -2);
-      ctx.lineTo(cx2, -2);
-      ctx.moveTo(cx1, 2);
-      ctx.lineTo(cx2, 2);
-      ctx.stroke();
-    }
-
-  } else if (mods >= 6) {
-    // DUAL-SAT CLUSTER: 2 satellite bodies docked
-    const bodyColor = state.coreTemp > 350 ? '#ff6b35' : state.coreTemp > 330 ? '#ffa726' : '#78909c';
-    const halfW = bodyW / 2 - 1;
-    // Body 1
-    ctx.fillStyle = bodyColor;
-    ctx.strokeStyle = '#b0bec5';
-    ctx.lineWidth = 1;
-    ctx.fillRect(-halfW - 2, -bodyH/2, halfW, bodyH);
-    ctx.strokeRect(-halfW - 2, -bodyH/2, halfW, bodyH);
-    // Body 2
-    ctx.fillRect(2, -bodyH/2, halfW, bodyH);
-    ctx.strokeRect(2, -bodyH/2, halfW, bodyH);
-    // Docking port
-    ctx.fillStyle = '#ffd700';
-    ctx.beginPath();
-    ctx.arc(0, -3, 2, 0, Math.PI * 2);
-    ctx.fill();
-    ctx.beginPath();
-    ctx.arc(0, 3, 2, 0, Math.PI * 2);
-    ctx.fill();
-
-  } else {
-    // Standard satellite body
-    ctx.fillStyle = state.coreTemp > 350 ? '#ff6b35' : state.coreTemp > 330 ? '#ffa726' : '#78909c';
-    ctx.strokeStyle = '#b0bec5';
-    ctx.lineWidth = 1;
-    ctx.fillRect(-bodyW/2, -bodyH/2, bodyW, bodyH);
-    ctx.strokeRect(-bodyW/2, -bodyH/2, bodyW, bodyH);
-  }
-
-  // Docking port indicators at body edges when modules > 6
-  if (mods > 6 && mods < 10) {
-    ctx.fillStyle = 'rgba(255,215,0,0.6)';
-    ctx.beginPath();
-    ctx.arc(-bodyW/2, 0, 2, 0, Math.PI * 2);
-    ctx.fill();
-    ctx.beginPath();
-    ctx.arc(bodyW/2, 0, 2, 0, Math.PI * 2);
-    ctx.fill();
-  }
-
-  // Compute activity indicator: small blinking dots on the satellite body (one per active module)
-  if (state.activeModules > 0 && mods < 10) {
-    const dotSpacing = bodyW / (state.maxModules + 1);
-    for (let i = 0; i < state.activeModules; i++) {
+  // Compute activity indicator on flagship
+  if (state.fleetPower > 0) {
+    const activeIndicators = Math.min(5, Math.ceil(state.fleetPower / 20));
+    const dotSpacing = bodyW / (activeIndicators + 1);
+    for (let i = 0; i < activeIndicators; i++) {
       const blinkPhase = Math.sin(state.simTime * 4 + i * 1.5);
       const dotAlpha = 0.5 + blinkPhase * 0.5;
       const dotX = -bodyW/2 + dotSpacing * (i + 1);
@@ -3761,60 +3938,40 @@ function drawSatellite(x, y, angle) {
     }
   }
 
-  // Solar panels (scale with megastructure)
+  // Solar panels
   const panelColor = state.inEclipse ? '#1a237e' : '#1565c0';
   ctx.fillStyle = panelColor;
   ctx.strokeStyle = '#42a5f5';
   ctx.lineWidth = 0.5;
 
-  if (mods < 10) {
-    // Left panel
-    ctx.fillRect(-bodyW/2 - panelW - 3, -panelH/2, panelW, panelH);
-    ctx.strokeRect(-bodyW/2 - panelW - 3, -panelH/2, panelW, panelH);
-    // Panel grid lines
-    ctx.strokeStyle = 'rgba(66,165,245,0.3)';
-    const gridCount = Math.max(3, Math.floor(panelW / 7));
-    for (let i = 1; i < gridCount; i++) {
-      ctx.beginPath();
-      ctx.moveTo(-bodyW/2 - panelW - 3 + i * panelW/gridCount, -panelH/2);
-      ctx.lineTo(-bodyW/2 - panelW - 3 + i * panelW/gridCount, panelH/2);
-      ctx.stroke();
-    }
+  // Left panel
+  ctx.fillRect(-bodyW/2 - panelW - 3, -panelH/2, panelW, panelH);
+  ctx.strokeRect(-bodyW/2 - panelW - 3, -panelH/2, panelW, panelH);
+  ctx.strokeStyle = 'rgba(66,165,245,0.3)';
+  const gridCount = Math.max(3, Math.floor(panelW / 7));
+  for (let i = 1; i < gridCount; i++) {
+    ctx.beginPath();
+    ctx.moveTo(-bodyW/2 - panelW - 3 + i * panelW/gridCount, -panelH/2);
+    ctx.lineTo(-bodyW/2 - panelW - 3 + i * panelW/gridCount, panelH/2);
+    ctx.stroke();
+  }
 
-    // Right panel
-    ctx.fillStyle = panelColor;
-    ctx.strokeStyle = '#42a5f5';
-    ctx.lineWidth = 0.5;
-    ctx.fillRect(bodyW/2 + 3, -panelH/2, panelW, panelH);
-    ctx.strokeRect(bodyW/2 + 3, -panelH/2, panelW, panelH);
-    ctx.strokeStyle = 'rgba(66,165,245,0.3)';
-    for (let i = 1; i < gridCount; i++) {
-      ctx.beginPath();
-      ctx.moveTo(bodyW/2 + 3 + i * panelW/gridCount, -panelH/2);
-      ctx.lineTo(bodyW/2 + 3 + i * panelW/gridCount, panelH/2);
-      ctx.stroke();
-    }
-  } else {
-    // Orbital station: 4 large panel arrays around the ring
-    const ringRadius = bodyW * 0.6;
-    for (let i = 0; i < 4; i++) {
-      const pAngle = (i / 4) * Math.PI * 2 + Math.PI / 4;
-      const px = Math.cos(pAngle) * (ringRadius + panelW/2 + 5);
-      const py = Math.sin(pAngle) * (ringRadius + panelW/2 + 5);
-      ctx.save();
-      ctx.translate(px, py);
-      ctx.rotate(pAngle);
-      ctx.fillStyle = panelColor;
-      ctx.fillRect(-panelW/3, -panelH/2, panelW * 0.6, panelH);
-      ctx.strokeStyle = '#42a5f5';
-      ctx.lineWidth = 0.5;
-      ctx.strokeRect(-panelW/3, -panelH/2, panelW * 0.6, panelH);
-      ctx.restore();
-    }
+  // Right panel
+  ctx.fillStyle = panelColor;
+  ctx.strokeStyle = '#42a5f5';
+  ctx.lineWidth = 0.5;
+  ctx.fillRect(bodyW/2 + 3, -panelH/2, panelW, panelH);
+  ctx.strokeRect(bodyW/2 + 3, -panelH/2, panelW, panelH);
+  ctx.strokeStyle = 'rgba(66,165,245,0.3)';
+  for (let i = 1; i < gridCount; i++) {
+    ctx.beginPath();
+    ctx.moveTo(bodyW/2 + 3 + i * panelW/gridCount, -panelH/2);
+    ctx.lineTo(bodyW/2 + 3 + i * panelW/gridCount, panelH/2);
+    ctx.stroke();
   }
 
   // Radiator panels (top and bottom, when deployed)
-  if (state.radiatorDeployment > 20 && mods < 10) {
+  if (state.radiatorDeployment > 20) {
     const radH = 8 * (state.radiatorDeployment / 100);
     ctx.fillStyle = 'rgba(200,200,200,0.6)';
     ctx.fillRect(-bodyW/2, -bodyH/2 - radH - 2, bodyW, radH);
@@ -3845,7 +4002,7 @@ function drawSatellite(x, y, angle) {
   ctx.fillStyle = '#4fc3f7';
   ctx.font = '9px monospace';
   ctx.textAlign = 'center';
-  const labelOffset = mods >= 10 ? bodyW * 0.6 + 18 : (state.radiatorDeployment > 20 ? 15 : 5);
+  const labelOffset = state.radiatorDeployment > 20 ? 15 : 5;
   ctx.fillText(structureLabel, 0, -bodyH/2 - labelOffset);
 
   ctx.restore();
@@ -3855,23 +4012,52 @@ function drawSatellite(x, y, angle) {
 // UI UPDATE
 // ============================================================
 function updateUI() {
-  // Header - Orbital Shells display
-  if (state.orbitalShells.length > 1) {
-    const shellText = state.orbitalShells.filter(s => s.active).map(s => {
-      const alt = s.altitude >= 10000 ? Math.round(s.altitude).toLocaleString() : s.altitude;
-      return s.name + ' ' + alt + 'km';
-    }).join(' | ');
-    document.getElementById('hud-orbit').textContent = shellText;
+  // Header - Fleet display
+  const fleetTflops = Math.floor(state.currentTFLOPS);
+  const fleetText = state.constellation.activeSats + ' sats | ' + fleetTflops.toLocaleString() + ' TFLOPS';
+  const hudOrbit = document.getElementById('hud-orbit');
+  hudOrbit.textContent = fleetText;
+  // Color based on fleet health
+  if (state.constellation.activeSats < state.constellation.totalSats * 0.5) {
+    hudOrbit.style.color = '#f44336';
+  } else if (state.constellation.activeSats < state.constellation.totalSats * 0.8) {
+    hudOrbit.style.color = '#ff9800';
   } else {
-    const orbitLabel = state.config.orbitType === 'sun-sync' ? ' km SSO' : ' km LEO';
-    document.getElementById('hud-orbit').textContent = state.config.altitude + orbitLabel;
+    hudOrbit.style.color = '#4fc3f7';
   }
   document.getElementById('hud-time').textContent = formatTime(state.simTime);
   document.getElementById('hud-credits').textContent = '$' + state.credits.toLocaleString();
   document.getElementById('hud-day').textContent = state.day;
 
-  // Controls
-  document.getElementById('val-compute-modules').textContent = `${state.activeModules} / ${state.maxModules}`;
+  // Controls - Constellation
+  document.getElementById('val-fleet-size').textContent = state.constellation.totalSats + ' sats';
+  document.getElementById('val-fleet-active').textContent = state.constellation.activeSats + ' / ' + state.constellation.totalSats;
+  document.getElementById('val-sat-gen').textContent = 'v' + state.constellation.satGeneration;
+  document.getElementById('val-fleet-power').textContent = state.fleetPower + '%';
+  // Launch queue display
+  const lqDisplay = document.getElementById('launch-queue-display');
+  if (lqDisplay) {
+    if (state.constellation.launchQueue.length > 0) {
+      lqDisplay.innerHTML = state.constellation.launchQueue.map(l => {
+        const timeLeft = Math.max(0, l.launchTime - state.simTime);
+        return `${l.vehicleName}: ${l.satsCount} sats - T-${(timeLeft/3600).toFixed(1)}h`;
+      }).join('<br>');
+    } else {
+      const cooldownLeft = state.lastLaunchTime > 0 ? Math.max(0,
+        Math.min(state.launchVehicles.falcon9.cooldownDays, state.launchVehicles.starship.cooldownDays) * 86400
+        - (state.simTime - state.lastLaunchTime)) : 0;
+      lqDisplay.textContent = cooldownLeft > 0 ? 'Pad cooldown: ' + (cooldownLeft / 3600).toFixed(1) + 'h' :
+        'Fleet health: ' + state.constellation.avgSatHealth.toFixed(0) + '%';
+    }
+  }
+  // Starship button state
+  const ssBtn = document.getElementById('btn-launch-ss');
+  if (ssBtn) {
+    if (state.launchVehicles.starship.available) {
+      ssBtn.disabled = false;
+      ssBtn.style.opacity = '1';
+    }
+  }
   document.getElementById('val-clock').textContent = state.clockSpeed + '%';
   document.getElementById('val-panel-angle').textContent = state.autoTrack ? 'AUTO' : state.panelAngle + '°';
   document.getElementById('val-radiators').textContent = state.radiatorDeployment + '%';
@@ -3917,7 +4103,8 @@ function updateUI() {
   let tflopsText = state.currentTFLOPS.toFixed(0) + ' TFLOPS';
   if (state.piratedTFLOPS > 0) tflopsText += ' (Pirated: +' + state.piratedTFLOPS.toFixed(0) + ')';
   document.getElementById('val-tflops').textContent = tflopsText;
-  document.getElementById('bar-tflops').style.width = (state.currentTFLOPS / (state.maxModules * state.config.tflopsPerModule * 1.5) * 100) + '%';
+  const maxPossibleTFLOPS = state.constellation.totalSats * state.constellation.tflopsPerSat * 1.5;
+  document.getElementById('bar-tflops').style.width = (state.currentTFLOPS / Math.max(1, maxPossibleTFLOPS) * 100) + '%';
   document.getElementById('val-chip-health').textContent = state.chipHealth.toFixed(1) + '%';
   const chipBar = document.getElementById('bar-chip-health');
   chipBar.style.width = state.chipHealth + '%';
@@ -4136,9 +4323,9 @@ function renderUpgrades() {
 // INPUT HANDLERS
 // ============================================================
 function setupControls() {
-  // Compute modules slider
-  document.getElementById('ctrl-compute').addEventListener('input', (e) => {
-    state.activeModules = parseInt(e.target.value);
+  // Fleet power slider
+  document.getElementById('ctrl-fleet-power').addEventListener('input', (e) => {
+    state.fleetPower = parseInt(e.target.value);
   });
 
   // Clock speed slider
@@ -4262,10 +4449,10 @@ function getOrientationModifiers() {
 // TUTORIAL SYSTEM
 // ============================================================
 const TUTORIAL_STEPS = [
-  { title: 'Welcome to Kessler Compute', text: 'You command an orbital datacenter satellite. Balance power, heat, and compute to run AI workloads for profit.' },
-  { title: 'Power & Solar', text: 'Your solar panels generate power in sunlight. You\'re in a sun-synchronous orbit with near-constant sunlight \u2014 but radiators still absorb solar heat.' },
-  { title: 'Thermal Management', text: 'Heat is your enemy. The Stefan-Boltzmann law governs cooling: P = \u03B5\u03C3AT\u2074. More compute = more heat. If core temp exceeds 390K, your satellite is destroyed.' },
-  { title: 'Compute Jobs', text: 'Contract offers appear periodically. You must ACCEPT or DECLINE each one. Accepted jobs have SLA deadlines - fail to complete in time and you pay a penalty. Rivals may steal unclaimed contracts!' },
+  { title: 'Welcome to Kessler Compute', text: 'You command a constellation of orbital datacenter satellites. Launch new satellites, manage fleet power, and run AI workloads for profit.' },
+  { title: 'Constellation Management', text: 'Start with 12 satellites. Schedule Falcon 9 or Starship launches to grow your fleet. Each satellite contributes TFLOPS. Use Fleet Power to control what % of the constellation is active.' },
+  { title: 'Thermal Management', text: 'Heat is your enemy. The Stefan-Boltzmann law governs cooling: P = \u03B5\u03C3AT\u2074. More compute = more heat. The thermal model represents the average satellite in your fleet.' },
+  { title: 'Compute Jobs', text: 'Contract offers appear periodically. You must ACCEPT or DECLINE each one. Total compute = activeSats x TFLOPS/sat x clock x health. Rivals may steal unclaimed contracts!' },
   { title: 'Tech Tree', text: 'Spend credits on upgrades in the bottom-right panel. Three branches: Military (red), Corporate (blue), Green (green). Each leads to a different victory condition.' },
   { title: 'Combat & Cargo', text: 'Rival satellites orbit nearby. Unlock weapons to attack them \u2014 but kinetic attacks create debris. Contraband cargo offers high rewards with detection risk.' },
   { title: 'Victory', text: 'Win by: earning $500K (Corporate), destroying all rivals (Military), surviving Kessler cascade with a moon base (Green), or reaching $1M with tier 5 tech (Secret). Good luck, Commander!' },
@@ -4334,6 +4521,10 @@ function saveGame() {
       activeModules: state.activeModules,
       maxModules: state.maxModules,
       clockSpeed: state.clockSpeed,
+      fleetPower: state.fleetPower,
+      constellation: JSON.parse(JSON.stringify(state.constellation)),
+      launchVehicles: JSON.parse(JSON.stringify(state.launchVehicles)),
+      lastLaunchTime: state.lastLaunchTime,
       radiatorDeployment: state.radiatorDeployment,
       panelDegradation: state.panelDegradation,
       orbitalDebrisLevel: state.orbitalDebrisLevel,
@@ -4453,6 +4644,24 @@ function loadGame() {
     state._debrisEndTime = saveData._debrisEndTime || 0;
     state.debrisWarning = saveData.debrisWarning || false;
     state.radiatorTemp = saveData.radiatorTemp || 290;
+    state.fleetPower = saveData.fleetPower !== undefined ? saveData.fleetPower : 100;
+    // Restore constellation (backward compat: if not present, init defaults)
+    if (saveData.constellation) {
+      state.constellation = saveData.constellation;
+      // Ensure launchQueue is an array
+      if (!Array.isArray(state.constellation.launchQueue)) state.constellation.launchQueue = [];
+    } else {
+      // Old save without constellation - initialize from old module count
+      state.constellation = {
+        totalSats: 12, activeSats: 12, failedSats: 0, satGeneration: 1,
+        tflopsPerSat: 50, powerPerSat: 2500, launchQueue: [], totalLaunched: 12,
+        avgSatHealth: 100, manufacturingRate: 0,
+      };
+    }
+    if (saveData.launchVehicles) {
+      state.launchVehicles = saveData.launchVehicles;
+    }
+    state.lastLaunchTime = saveData.lastLaunchTime || 0;
     // If flare is active but no end time, set a reasonable one
     if (state.solarFlareActive && !state._flareEndTime) {
       state._flareEndTime = state.simTime + 3600; // 1 hour from now
@@ -4508,11 +4717,16 @@ function loadGame() {
     }
 
     // Reset DOM sliders
-    document.getElementById('ctrl-compute').max = state.maxModules;
-    document.getElementById('ctrl-compute').value = state.activeModules;
+    document.getElementById('ctrl-fleet-power').value = state.fleetPower;
     document.getElementById('ctrl-clock').value = state.clockSpeed;
     document.getElementById('ctrl-radiators').value = state.radiatorDeployment;
     document.getElementById('ctrl-panel-angle').value = state.panelAngle;
+    // Starship button availability
+    const ssBtnLoad = document.getElementById('btn-launch-ss');
+    if (ssBtnLoad && state.launchVehicles.starship.available) {
+      ssBtnLoad.disabled = false;
+      ssBtnLoad.style.opacity = '1';
+    }
     document.getElementById('btn-auto-track').classList.toggle('active', state.autoTrack);
     document.getElementById('btn-uplink').classList.toggle('active', state.uplinkActive);
 
@@ -4569,13 +4783,14 @@ function init() {
   const orbitDesc = state.config.orbitType === 'sun-sync'
     ? `sun-synchronous dawn/dusk orbit (β=${state.config.betaAngle}°)`
     : `standard LEO orbit (i=${state.config.inclination}°)`;
-  addLog('info', `Satellite SAT-DC1 deployed to ${state.config.altitude}km ${orbitDesc}`);
+  addLog('info', `Constellation deployed to ${state.config.altitude}km ${orbitDesc}`);
   addLog('info', `Orbital period: ${(state.orbitalPeriod / 60).toFixed(1)} min`);
   addLog('info', `Eclipse fraction: ${(state.eclipseFraction * 100).toFixed(1)}% — ${state.eclipseFraction === 0 ? 'CONTINUOUS SUNLIGHT' : 'periodic shadow'}`);
+  addLog('info', `Fleet: ${state.constellation.totalSats} v${state.constellation.satGeneration} satellites (${state.constellation.tflopsPerSat} TFLOPS/sat)`);
+  addLog('info', `Total compute: ${state.constellation.totalSats * state.constellation.tflopsPerSat} TFLOPS | Power: ${state.constellation.totalSats * state.constellation.powerPerSat / 1000} kW`);
   addLog('info', `Solar panels: ${state.config.solarPanelArea}m² @ ${(state.config.solarCellEfficiency*100)}% efficiency`);
   addLog('info', `Radiators: ${state.config.radiatorArea}m² @ ε=${state.config.radiatorEmissivity}`);
-  addLog('info', `Compute: ${state.config.computeModules} modules × ${state.config.tflopsPerModule} TFLOPS`);
-  addLog('info', 'Systems nominal. Accepting compute jobs.');
+  addLog('info', 'All systems nominal. Accepting compute jobs.');
 
   // Initialize rival satellites
   initRivals();
