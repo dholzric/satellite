@@ -19,7 +19,7 @@ body {
 #game-container {
   display: grid;
   grid-template-columns: 280px 1fr 300px;
-  grid-template-rows: 50px 1fr 180px;
+  grid-template-rows: 50px 1fr 200px;
   height: 100vh;
   gap: 2px;
 }
@@ -210,7 +210,7 @@ input[type="range"]::-webkit-slider-thumb {
   background: #0d1117;
   border-top: 1px solid #1e3a5f;
   display: grid;
-  grid-template-columns: 1fr 1fr 1fr;
+  grid-template-columns: 1fr 1fr 1fr 1fr;
   gap: 1px;
 }
 
@@ -439,6 +439,168 @@ input[type="range"]::-webkit-slider-thumb {
 ::-webkit-scrollbar-track { background: #0a0a1a; }
 ::-webkit-scrollbar-thumb { background: #1e3a5f; border-radius: 2px; }
 
+/* Stats Overlay */
+#stats-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0,0,0,0.85);
+  z-index: 85;
+  display: flex;
+  justify-content: center;
+  align-items: center;
+}
+#stats-overlay.hidden { display: none; }
+#stats-content {
+  background: #0d1117;
+  border: 1px solid #4fc3f7;
+  border-radius: 8px;
+  padding: 24px;
+  max-width: 700px;
+  width: 90%;
+  max-height: 80vh;
+  overflow-y: auto;
+}
+#stats-content h2 { color: #4fc3f7; font-size: 18px; margin-bottom: 16px; text-align: center; }
+#stats-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr 1fr;
+  gap: 12px;
+  margin-bottom: 20px;
+}
+.stat-card {
+  background: #1a1a2e;
+  border: 1px solid #1e3a5f;
+  border-radius: 6px;
+  padding: 12px;
+  text-align: center;
+}
+.stat-card .stat-number { font-size: 22px; font-weight: bold; color: #4fc3f7; }
+.stat-card .stat-label { font-size: 10px; color: #888; text-transform: uppercase; margin-top: 4px; }
+#stats-charts {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 12px;
+  margin-bottom: 16px;
+}
+.sparkline-container {
+  background: #1a1a2e;
+  border: 1px solid #1e3a5f;
+  border-radius: 6px;
+  padding: 8px;
+  text-align: center;
+}
+.sparkline-container .sparkline-label {
+  font-size: 10px;
+  color: #888;
+  text-transform: uppercase;
+  margin-bottom: 4px;
+}
+.sparkline-container canvas {
+  display: block;
+  margin: 0 auto;
+}
+
+/* Notification popups */
+.notification {
+  background: #0d1b2a;
+  border: 1px solid #4fc3f7;
+  border-radius: 6px;
+  padding: 10px 16px;
+  margin-bottom: 8px;
+  font-size: 12px;
+  color: #ddd;
+  animation: notif-in 0.3s ease-out, notif-out 0.5s ease-in 4.5s forwards;
+  max-width: 300px;
+  pointer-events: auto;
+}
+.notification.danger { border-color: #f44336; }
+.notification.success { border-color: #66bb6a; }
+.notification.warning { border-color: #ff9800; }
+@keyframes notif-in { from { opacity:0; transform:translateX(50px); } to { opacity:1; transform:translateX(0); } }
+@keyframes notif-out { from { opacity:1; } to { opacity:0; } }
+
+/* Keyboard shortcuts overlay */
+#shortcuts-overlay {
+  display: none;
+  position: fixed;
+  inset: 0;
+  background: rgba(0,0,0,0.8);
+  z-index: 95;
+  justify-content: center;
+  align-items: center;
+}
+#shortcuts-overlay.show { display: flex; }
+#shortcuts-box {
+  background: #0d1b2a;
+  border: 1px solid #4fc3f7;
+  border-radius: 8px;
+  padding: 24px 32px;
+  max-width: 400px;
+  text-align: left;
+}
+#shortcuts-box h2 { color: #4fc3f7; font-size: 16px; margin-bottom: 12px; text-align: center; }
+#shortcuts-box table { width: 100%; border-collapse: collapse; }
+#shortcuts-box td { padding: 4px 8px; font-size: 12px; color: #ccc; border-bottom: 1px solid #1e3a5f; }
+#shortcuts-box td:first-child { color: #4fc3f7; font-weight: bold; width: 80px; text-align: center; }
+
+/* Supply chain section styling */
+#bottom-panel.four-cols { grid-template-columns: 1fr 1fr 1fr 1fr; }
+.supply-resource-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  font-size: 11px;
+  padding: 2px 0;
+  border-bottom: 1px solid rgba(30,58,95,0.4);
+}
+.supply-resource-row .res-name { color: #aaa; flex: 1; }
+.supply-resource-row .res-amt { color: #fff; width: 50px; text-align: right; }
+.supply-resource-row .res-rate { color: #66bb6a; width: 50px; text-align: right; font-size: 10px; }
+.supply-resource-row .res-buy {
+  margin-left: 6px;
+  padding: 1px 6px;
+  background: #1e3a5f;
+  border: 1px solid #2e5a8f;
+  color: #ffd700;
+  font-family: inherit;
+  font-size: 10px;
+  cursor: pointer;
+  border-radius: 2px;
+}
+.supply-resource-row .res-buy:hover { background: #2e5a8f; }
+.supply-factory-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  font-size: 11px;
+  padding: 3px 0;
+  border-bottom: 1px solid rgba(30,58,95,0.4);
+}
+.supply-factory-row .fac-name { color: #aaa; flex: 1; }
+.supply-factory-row .fac-output { color: #4fc3f7; width: 70px; text-align: right; font-size: 10px; }
+.supply-factory-row .fac-upgrade {
+  margin-left: 6px;
+  padding: 1px 6px;
+  background: #1e3a5f;
+  border: 1px solid #2e5a8f;
+  color: #66bb6a;
+  font-family: inherit;
+  font-size: 10px;
+  cursor: pointer;
+  border-radius: 2px;
+}
+.supply-factory-row .fac-upgrade:hover { background: #2e5a8f; }
+.supply-factory-row .fac-upgrade.maxed { opacity: 0.4; cursor: default; }
+.supply-event-banner {
+  font-size: 10px;
+  color: #ff9800;
+  padding: 3px 6px;
+  margin-top: 4px;
+  border: 1px solid #ff9800;
+  border-radius: 3px;
+  background: rgba(255,152,0,0.08);
+}
+
 @media (max-width: 900px) {
   #game-container {
     grid-template-columns: 1fr;
@@ -448,7 +610,7 @@ input[type="range"]::-webkit-slider-thumb {
     border: none;
     border-bottom: 1px solid #1e3a5f;
   }
-  #bottom-panel {
+  #bottom-panel, #bottom-panel.four-cols {
     grid-template-columns: 1fr;
   }
 }
@@ -474,8 +636,8 @@ input[type="range"]::-webkit-slider-thumb {
         <span class="stat-value" id="hud-credits">$0</span>
       </div>
       <div class="stat">
-        <span class="stat-label">DAY:</span>
-        <span class="stat-value" id="hud-day">1</span>
+        <span class="stat-label">MISSION:</span>
+        <span class="stat-value" id="hud-mission">Year 1, Day 1</span>
       </div>
       <div class="speed-controls">
         <button class="speed-btn" data-speed="0">||</button>
@@ -484,8 +646,10 @@ input[type="range"]::-webkit-slider-thumb {
         <button class="speed-btn" data-speed="20">20x</button>
         <button class="speed-btn" data-speed="100">100x</button>
         <button class="speed-btn" id="btn-sound">SND</button>
+        <button class="speed-btn" id="btn-stats">STATS</button>
         <button class="speed-btn" id="btn-save">SAVE</button>
         <button class="speed-btn" id="btn-load">LOAD</button>
+        <button class="speed-btn" id="btn-keys" onclick="document.getElementById('shortcuts-overlay').classList.toggle('show')">? KEYS</button>
       </div>
     </div>
   </div>
@@ -735,6 +899,10 @@ input[type="range"]::-webkit-slider-thumb {
       <div id="upgrades-list"></div>
       <div id="combat-panel" style="margin-top:8px"></div>
     </div>
+    <div class="bottom-section">
+      <div class="bottom-section-title">Supply Chain</div>
+      <div id="supply-chain-panel"></div>
+    </div>
   </div>
 </div>
 
@@ -767,6 +935,41 @@ input[type="range"]::-webkit-slider-thumb {
   <p id="victory-desc">You have achieved orbital dominance.</p>
   <p id="victory-stats"></p>
   <button class="btn" onclick="location.reload()">PLAY AGAIN</button>
+</div>
+
+<!-- Stats Overlay -->
+<div id="stats-overlay" class="hidden">
+  <div id="stats-content">
+    <h2>Mission Analytics</h2>
+    <div id="stats-grid"></div>
+    <div id="stats-charts"></div>
+    <button class="btn" onclick="document.getElementById('stats-overlay').classList.add('hidden')">Close</button>
+  </div>
+</div>
+
+<!-- Notification Popups -->
+<div id="notifications" style="position:fixed;top:60px;right:10px;z-index:80;pointer-events:none;"></div>
+
+<!-- Keyboard Shortcuts Overlay -->
+<div id="shortcuts-overlay">
+  <div id="shortcuts-box">
+    <h2>KEYBOARD SHORTCUTS</h2>
+    <table>
+      <tr><td>1</td><td>Pause</td></tr>
+      <tr><td>2</td><td>Speed 1x</td></tr>
+      <tr><td>3</td><td>Speed 5x</td></tr>
+      <tr><td>4</td><td>Speed 20x</td></tr>
+      <tr><td>5</td><td>Speed 100x</td></tr>
+      <tr><td>SPACE</td><td>Toggle Pause</td></tr>
+      <tr><td>L</td><td>Quick Launch Falcon 9</td></tr>
+      <tr><td>S</td><td>Quick Save</td></tr>
+      <tr><td>T</td><td>Toggle Solar/Thermal Orientation</td></tr>
+      <tr><td>R</td><td>Repair Chips (if affordable)</td></tr>
+    </table>
+    <div style="text-align:center;margin-top:12px">
+      <button class="btn" style="width:auto;padding:6px 16px" onclick="document.getElementById('shortcuts-overlay').classList.remove('show')">Close</button>
+    </div>
+  </div>
 </div>
 
 <script>
@@ -1057,6 +1260,25 @@ let state = {
   // Evasion debuff from spy tourists
   evasionDebuffUntil: 0,  // simTime when spy evasion debuff expires
 
+  // Supply Chain & Manufacturing
+  resources: {
+    silicon: { amount: 500, production: 10, price: 5 },
+    lithium: { amount: 200, production: 5, price: 8 },
+    aluminum: { amount: 300, production: 8, price: 3 },
+    rareEarth: { amount: 100, production: 2, price: 15 },
+  },
+  factories: {
+    chipFab: { level: 1, output: 10, cost: 20000 },
+    batteryPlant: { level: 1, output: 5, cost: 15000 },
+    assemblyLine: { level: 1, output: 3, cost: 25000 },
+  },
+  satBuildQueue: 5,
+  satBuildRate: 0,
+  _supplyEventActive: null,
+  _supplyEventEnd: 0,
+  _lastSupplyEventCheck: 0,
+  _lastConstellationMilestoneNotified: 0,
+
   // Booster events
   _pendingBoosterEvent: null, // { resolveTime, logged }
 
@@ -1072,6 +1294,28 @@ let state = {
   _lastProxyEvent: 0,
   _lastPiracyCheck: 0,
   _lastBioLog: 0,
+
+  // Statistics tracking
+  stats: {
+    history: [],
+    lastRecordTime: 0,
+    peakTFLOPS: 0,
+    peakCredits: 0,
+    peakSats: 0,
+    peakTemp: 0,
+    totalJobsCompleted: 0,
+    totalJobsFailed: 0,
+    totalLaunches: 0,
+    totalLaunchFailures: 0,
+    totalSatsLost: 0,
+    totalAttacks: 0,
+    totalDebrisHits: 0,
+    creditsHistory: [],
+    tflopsHistory: [],
+    tempHistory: [],
+    satsHistory: [],
+    totalCreditsSpentOnLaunches: 0,
+  },
 };
 
 // ============================================================
@@ -1424,6 +1668,9 @@ function updateSimulation(dtReal) {
   // --- Compute Market ---
   updateMarketPrice(dt);
 
+  // --- Manufacturing ---
+  processManufacturing(dt);
+
   // --- Process Launches ---
   processLaunches(dt);
 
@@ -1446,6 +1693,9 @@ function updateSimulation(dtReal) {
     triggerGameOver('All compute chips failed from accumulated radiation damage');
     return;
   }
+
+  // --- Stats Recording ---
+  recordStats();
 
   // --- Random Events ---
   processEvents(dt);
@@ -1477,6 +1727,13 @@ function scheduleLaunch(vehicleType) {
   }
   if (state.credits < vehicle.cost) {
     addLog('warn', `Insufficient credits for launch ($${vehicle.cost.toLocaleString()} needed, have $${state.credits.toLocaleString()})`);
+    showNotification('Not enough credits for launch!', 'danger');
+    return;
+  }
+  // Check built satellites
+  if (state.satBuildQueue < vehicle.satsPerLaunch) {
+    addLog('warn', `Not enough built satellites! Need ${vehicle.satsPerLaunch}, have ${state.satBuildQueue}. Build more in Supply Chain.`);
+    showNotification('Need ' + vehicle.satsPerLaunch + ' built sats, have ' + state.satBuildQueue, 'warning');
     return;
   }
   // Check cooldown
@@ -1486,8 +1743,10 @@ function scheduleLaunch(vehicleType) {
     addLog('warn', `Launch pad cooling down - ${(remaining / 3600).toFixed(1)}h remaining`);
     return;
   }
-  // Deduct cost
+  // Deduct cost and built sats
   state.credits -= vehicle.cost;
+  state.satBuildQueue -= vehicle.satsPerLaunch;
+  state.stats.totalCreditsSpentOnLaunches += vehicle.cost;
   state.lastLaunchTime = state.simTime;
 
   const vehicleName = vehicleType === 'falcon9' ? 'Falcon 9' : 'Starship';
@@ -1519,8 +1778,10 @@ function processLaunches(dt) {
         state.constellation.activeSats += deployed;
         state.constellation.totalLaunched += launch.satsCount;
         state.constellation.failedSats += doaCount;
+        state.stats.totalLaunches++;
         const doaMsg = doaCount > 0 ? ` (${doaCount} DOA - failed to commission)` : '';
         addLog('success', `${launch.vehicleName} launch SUCCESS! ${deployed} v${launch.generation} satellites deployed${doaMsg}. Fleet: ${state.constellation.totalSats} sats`);
+        showNotification('LAUNCH SUCCESS: ' + deployed + ' sats deployed!', 'success');
         SoundEngine.play('upgrade');
       } else if (roll < launch.successRate + 0.05) {
         // Partial failure (5% chance beyond failure threshold)
@@ -1529,12 +1790,17 @@ function processLaunches(dt) {
         state.constellation.activeSats += deployed;
         state.constellation.totalLaunched += deployed;
         state.constellation.failedSats += launch.satsCount - deployed;
+        state.stats.totalLaunches++;
+        state.stats.totalLaunchFailures++;
         addLog('warn', `${launch.vehicleName} PARTIAL FAILURE! Only ${deployed}/${launch.satsCount} satellites reached orbit. ${launch.satsCount - deployed} lost during deployment.`);
         SoundEngine.play('warning');
       } else {
         // Total failure
         state.constellation.failedSats += launch.satsCount;
+        state.stats.totalLaunches++;
+        state.stats.totalLaunchFailures++;
         addLog('error', `${launch.vehicleName} LAUNCH FAILURE! Vehicle lost during ascent - ${launch.satsCount} satellites destroyed! $${state.launchVehicles[launch.vehicle].cost.toLocaleString()} wasted!`);
+        showNotification('LAUNCH FAILURE: ' + launch.satsCount + ' sats lost!', 'danger');
         SoundEngine.play('explosion');
         // Small debris increase from failed launch
         state.orbitalDebrisLevel = Math.min(100, state.orbitalDebrisLevel + 1);
@@ -1575,6 +1841,7 @@ function processSatelliteAttrition(dt) {
     satsFailed = Math.min(satsFailed, state.constellation.activeSats);
     state.constellation.activeSats -= satsFailed;
     state.constellation.failedSats += satsFailed;
+    state.stats.totalSatsLost += satsFailed;
     // Failed sats become debris
     state.orbitalDebrisLevel = Math.min(100, state.orbitalDebrisLevel + satsFailed * 0.1);
     if (satsFailed >= 3) {
@@ -1685,7 +1952,9 @@ function processJobs(dt) {
     if (job.active && !job.pending && job.slaDeadline > 0 && state.simTime > job.slaDeadline) {
       const penalty = Math.floor(job.reward * 0.5);
       state.credits -= penalty;
+      state.stats.totalJobsFailed++;
       addLog('error', `SLA BREACH: ${job.name} - penalty $${penalty.toLocaleString()}`);
+      showNotification('SLA BREACH: ' + job.name + ' (-$' + penalty.toLocaleString() + ')', 'danger');
       state.jobs.splice(i, 1);
     }
   }
@@ -1732,6 +2001,7 @@ function processJobs(dt) {
       state.credits += effectiveReward;
       state.totalCreditsEarned += effectiveReward;
       state.completedJobs++;
+      state.stats.totalJobsCompleted++;
       let bonusText = '';
       if (state.config._hasMarket) bonusText += ' [Market: ' + state.marketPriceFactor.toFixed(1) + 'x]';
       if (state.sanctioned) bonusText += ' [SANCTIONED: 50%]';
@@ -1770,6 +2040,7 @@ function processEvents(dt) {
       state._flareEndTime = state.simTime + (2 + Math.random() * 6) * 3600; // 2-8 hours in sim time
       const severity = state.solarFlareIntensity > 0.6 ? 'SEVERE' : 'moderate';
       addLog('error', `SOLAR FLARE DETECTED - ${severity} (intensity: ${(state.solarFlareIntensity * 100).toFixed(0)}%)`);
+      showNotification('SOLAR FLARE: ' + severity + ' intensity!', 'danger');
       SoundEngine.play('alert');
     }
   }
@@ -1779,6 +2050,7 @@ function processEvents(dt) {
     state.solarFlareIntensity = 0;
     state._flareEndTime = 0;
     addLog('info', 'Solar flare subsided');
+    showNotification('Solar flare subsided', 'success');
   }
 
   // Debris warnings
@@ -2282,6 +2554,7 @@ function processRivals(dt) {
       if (!state.kesslerCascade && state.orbitalDebrisLevel > 80) {
         state.kesslerCascade = true;
         addLog('error', 'KESSLER CASCADE INITIATED - Debris generating more debris!');
+        showNotification('KESSLER CASCADE INITIATED!', 'danger');
         addLog('error', 'All satellites in orbital shell at extreme risk!');
       }
     }
@@ -2305,7 +2578,7 @@ function processRivals(dt) {
         // Shield absorbs hits but degrades
         if (shieldActive) {
           state.shieldHealth = Math.max(0, state.shieldHealth - damage * 2);
-          if (state.shieldHealth <= 0) addLog('error', 'SHIELD DEPLETED! No more debris protection');
+          if (state.shieldHealth <= 0) { addLog('error', 'SHIELD DEPLETED! No more debris protection'); showNotification('SHIELD DEPLETED!', 'danger'); }
         }
         if (damage > 3) {
           // Debris destroys random sats from constellation
@@ -2313,7 +2586,9 @@ function processRivals(dt) {
           if (satsHit > 0) {
             state.constellation.activeSats -= satsHit;
             state.constellation.failedSats += satsHit;
+            state.stats.totalSatsLost += satsHit;
           }
+          state.stats.totalDebrisHits++;
           state.config.radiatorArea *= (1 - damage / 200);
           SoundEngine.play('explosion');
           addLog('error', `DEBRIS STRIKE! ${satsHit} sat(s) destroyed, radiator -${damage.toFixed(1)}%${shieldActive ? `, shield ${state.shieldHealth.toFixed(0)}%` : ''}. Fleet: ${state.constellation.activeSats}/${state.constellation.totalSats}`);
@@ -2363,6 +2638,7 @@ function attackRival(rivalId, weaponType) {
   SoundEngine.play('explosion');
   const rival = state.rivals.find(r => r.id === rivalId);
   if (!rival || rival.health <= 0) return;
+  state.stats.totalAttacks++;
   if (state.attackCooldown > 0) {
     addLog('warn', `Attack systems cooling down (${Math.ceil(state.attackCooldown)}s remaining)`);
     return;
@@ -2423,6 +2699,7 @@ function attackRival(rivalId, weaponType) {
         rival.destroyedAt = rival.destroyedAt || state.simTime;
         state.orbitalDebrisLevel += 10; // destroyed sat = more debris
         addLog('error', `${rival.name} DESTROYED - satellite breakup creating additional debris!`);
+        showNotification('RIVAL DESTROYED: ' + rival.name, 'success');
       } else {
         rival.retaliating = true;
         rival.retaliationCooldown = state.simTime + 1800;
@@ -2831,6 +3108,28 @@ function renderCargoOffers() {
 function checkVictoryConditions() {
   if (state.gameOver || state.victoryAchieved) return;
 
+  // Victory approach notifications (throttled - check every 30s real)
+  if (!checkVictoryConditions._lastCheck || performance.now() - checkVictoryConditions._lastCheck > 30000) {
+    checkVictoryConditions._lastCheck = performance.now();
+    if (state.totalCreditsEarned >= 400000 && state.totalCreditsEarned < 500000 && !checkVictoryConditions._notified400k) {
+      checkVictoryConditions._notified400k = true;
+      showNotification('$' + state.totalCreditsEarned.toLocaleString() + ' of $500K for Compute Hegemony!', 'warning');
+    }
+    if (state.totalCreditsEarned >= 800000 && state.totalCreditsEarned < 1000000 && !checkVictoryConditions._notified800k) {
+      checkVictoryConditions._notified800k = true;
+      showNotification('$' + state.totalCreditsEarned.toLocaleString() + ' of $1M for Mars Exodus!', 'warning');
+    }
+  }
+
+  // Constellation milestone notifications
+  const milestones = [100, 500, 1000, 5000, 10000];
+  for (const ms of milestones) {
+    if (state.constellation.activeSats >= ms && state._lastConstellationMilestoneNotified < ms) {
+      state._lastConstellationMilestoneNotified = ms;
+      showNotification('MILESTONE: ' + ms.toLocaleString() + ' active satellites!', 'success');
+    }
+  }
+
   // Check secret ending FIRST (highest threshold, must not be preempted)
   // Mars Exodus (Secret): accumulate $1,000,000 AND own tier 5 in any branch
   const hasTier5 = UPGRADES.some(u => u.tier === 5 && u.owned);
@@ -3115,6 +3414,225 @@ function formatTime(seconds) {
 function formatWatts(w) {
   if (w >= 1000) return (w / 1000).toFixed(1) + ' kW';
   return Math.round(w) + ' W';
+}
+
+// ============================================================
+// NOTIFICATION SYSTEM
+// ============================================================
+function showNotification(message, type) {
+  const container = document.getElementById('notifications');
+  if (!container) return;
+  const div = document.createElement('div');
+  div.className = 'notification' + (type ? ' ' + type : '');
+  div.textContent = message;
+  container.appendChild(div);
+  setTimeout(() => {
+    if (div.parentNode) div.parentNode.removeChild(div);
+  }, 5000);
+}
+
+// ============================================================
+// SUPPLY CHAIN & MANUFACTURING
+// ============================================================
+const SAT_RESOURCE_COST = { silicon: 20, lithium: 10, aluminum: 15, rareEarth: 5 };
+
+function processManufacturing(dt) {
+  const dayFraction = dt / 86400;
+
+  // Produce resources based on production rates
+  for (const key of Object.keys(state.resources)) {
+    let prodRate = state.resources[key].production;
+    // Tech tree bonuses
+    if (key === 'rareEarth' || key === 'aluminum') {
+      const asteroidUpgrade = UPGRADES.find(u => u.id === 'corp_t4_asteroid');
+      if (asteroidUpgrade && asteroidUpgrade.owned) prodRate *= 2;
+    }
+    // Supply event modifiers
+    if (state._supplyEventActive) {
+      const ev = state._supplyEventActive;
+      if (ev.type === 'lithium_boom' && key === 'lithium') prodRate *= 1.5;
+      if (ev.type === 'silicon_embargo' && key === 'silicon') prodRate *= 0.5;
+      if (ev.type === 'rare_earth_shortage' && key === 'rareEarth') {} // price doubled, not production
+    }
+    state.resources[key].amount += prodRate * dayFraction;
+  }
+
+  // Assembly line builds satellites
+  const assemblyRate = state.factories.assemblyLine.level * 3;
+  const satsCanBuild = assemblyRate * dayFraction;
+  let satsToBuild = satsCanBuild;
+
+  // Check resources for each satellite
+  while (satsToBuild >= 1) {
+    let canBuild = true;
+    for (const [res, cost] of Object.entries(SAT_RESOURCE_COST)) {
+      if (state.resources[res].amount < cost) { canBuild = false; break; }
+    }
+    if (!canBuild) break;
+    // Consume resources
+    for (const [res, cost] of Object.entries(SAT_RESOURCE_COST)) {
+      state.resources[res].amount -= cost;
+    }
+    state.satBuildQueue++;
+    satsToBuild--;
+  }
+
+  // Fractional satellite progress (accumulate partial work)
+  if (satsToBuild > 0 && satsToBuild < 1) {
+    let canBuildPartial = true;
+    for (const [res, cost] of Object.entries(SAT_RESOURCE_COST)) {
+      if (state.resources[res].amount < cost * satsToBuild) { canBuildPartial = false; break; }
+    }
+    if (canBuildPartial) {
+      if (!state._partialSatProgress) state._partialSatProgress = 0;
+      state._partialSatProgress += satsToBuild;
+      // Consume fractional resources
+      for (const [res, cost] of Object.entries(SAT_RESOURCE_COST)) {
+        state.resources[res].amount -= cost * satsToBuild;
+      }
+      if (state._partialSatProgress >= 1) {
+        state.satBuildQueue += Math.floor(state._partialSatProgress);
+        state._partialSatProgress -= Math.floor(state._partialSatProgress);
+      }
+    }
+  }
+
+  state.satBuildRate = assemblyRate;
+
+  // Supply events (every ~10 days sim time)
+  if (state.simTime - state._lastSupplyEventCheck > 10 * 86400) {
+    state._lastSupplyEventCheck = state.simTime;
+    if (!state._supplyEventActive && Math.random() < 0.7) {
+      const events = [
+        { type: 'rare_earth_shortage', msg: 'Rare earth shortage! Price doubled for 48h', duration: 48 * 3600 },
+        { type: 'lithium_boom', msg: 'Lithium mine discovered! +50% production for 30 days', duration: 30 * 86400 },
+        { type: 'silicon_embargo', msg: 'Trade embargo on silicon imports! Production halved for 24h', duration: 24 * 3600 },
+        { type: 'aluminum_deal', msg: 'Bulk aluminum deal available! Buy 500 at 50% off', duration: 12 * 3600 },
+      ];
+      const ev = events[Math.floor(Math.random() * events.length)];
+      state._supplyEventActive = { ...ev };
+      state._supplyEventEnd = state.simTime + ev.duration;
+      addLog('warn', 'SUPPLY EVENT: ' + ev.msg);
+      showNotification('SUPPLY: ' + ev.msg, 'warning');
+    }
+  }
+  // End supply event
+  if (state._supplyEventActive && state.simTime >= state._supplyEventEnd) {
+    addLog('info', 'Supply event ended: ' + state._supplyEventActive.msg.split('!')[0]);
+    state._supplyEventActive = null;
+    state._supplyEventEnd = 0;
+  }
+}
+
+function buyResource(type, amount) {
+  const res = state.resources[type];
+  if (!res) return;
+  let price = res.price;
+  // Supply event price modifiers
+  if (state._supplyEventActive) {
+    if (state._supplyEventActive.type === 'rare_earth_shortage' && type === 'rareEarth') price *= 2;
+    if (state._supplyEventActive.type === 'aluminum_deal' && type === 'aluminum') price *= 0.5;
+  }
+  // Green tech discount
+  if (type === 'aluminum') {
+    const sailUpgrade = UPGRADES.find(u => u.id === 'green_t2_sail');
+    if (sailUpgrade && sailUpgrade.owned) price *= 0.7;
+  }
+  const totalCost = Math.ceil(price * amount);
+  if (state.credits < totalCost) {
+    addLog('warn', 'Insufficient credits to buy ' + amount + ' ' + type + ' ($' + totalCost.toLocaleString() + ' needed)');
+    return;
+  }
+  state.credits -= totalCost;
+  res.amount += amount;
+  addLog('info', 'Bought ' + amount + ' ' + type + ' for $' + totalCost.toLocaleString());
+  SoundEngine.play('click');
+}
+
+function upgradeFactory(type) {
+  const factory = state.factories[type];
+  if (!factory) return;
+  if (factory.level >= 5) {
+    addLog('warn', type + ' already at max level (5)');
+    return;
+  }
+  const cost = factory.cost * Math.pow(2, factory.level - 1);
+  if (state.credits < cost) {
+    addLog('warn', 'Insufficient credits for upgrade ($' + Math.floor(cost).toLocaleString() + ' needed)');
+    return;
+  }
+  state.credits -= cost;
+  factory.level++;
+  factory.output = factory.level * (type === 'chipFab' ? 10 : type === 'batteryPlant' ? 5 : 3);
+  addLog('success', type + ' upgraded to level ' + factory.level + ' (-$' + Math.floor(cost).toLocaleString() + ')');
+  SoundEngine.play('upgrade');
+  showNotification('Factory upgraded: ' + type + ' Lv.' + factory.level, 'success');
+}
+
+let _lastSupplyRender = 0;
+function renderSupplyChain() {
+  const now = performance.now();
+  if (now - _lastSupplyRender < 500) return;
+  _lastSupplyRender = now;
+
+  const el = document.getElementById('supply-chain-panel');
+  if (!el) return;
+
+  // Make bottom panel 4 columns
+  const bp = document.getElementById('bottom-panel');
+  if (bp && !bp.classList.contains('four-cols')) bp.classList.add('four-cols');
+
+  const resNames = { silicon: 'Silicon', lithium: 'Lithium', aluminum: 'Aluminum', rareEarth: 'Rare Earth' };
+  let html = '<div style="font-size:10px;color:#4fc3f7;text-transform:uppercase;margin-bottom:4px">Resources</div>';
+
+  for (const [key, label] of Object.entries(resNames)) {
+    const res = state.resources[key];
+    let price = res.price;
+    if (state._supplyEventActive) {
+      if (state._supplyEventActive.type === 'rare_earth_shortage' && key === 'rareEarth') price *= 2;
+      if (state._supplyEventActive.type === 'aluminum_deal' && key === 'aluminum') price *= 0.5;
+    }
+    if (key === 'aluminum') {
+      const sailUpgrade = UPGRADES.find(u => u.id === 'green_t2_sail');
+      if (sailUpgrade && sailUpgrade.owned) price *= 0.7;
+    }
+    html += '<div class="supply-resource-row">' +
+      '<span class="res-name">' + label + '</span>' +
+      '<span class="res-amt">' + Math.floor(res.amount) + '</span>' +
+      '<span class="res-rate">+' + res.production + '/d</span>' +
+      '<button class="res-buy" onclick="buyResource(\'' + key + '\', 50)">50@$' + Math.ceil(price * 50) + '</button>' +
+      '</div>';
+  }
+
+  html += '<div style="font-size:10px;color:#4fc3f7;text-transform:uppercase;margin:6px 0 4px 0">Manufacturing</div>';
+
+  const facNames = { chipFab: 'Chip Fab', batteryPlant: 'Battery Plant', assemblyLine: 'Assembly Line' };
+  const facUnits = { chipFab: '/day', batteryPlant: '/day', assemblyLine: ' sats/day' };
+  for (const [key, label] of Object.entries(facNames)) {
+    const fac = state.factories[key];
+    const upgCost = Math.floor(fac.cost * Math.pow(2, fac.level - 1));
+    const maxed = fac.level >= 5;
+    const output = key === 'assemblyLine' ? (fac.level * 3) : fac.output;
+    html += '<div class="supply-factory-row">' +
+      '<span class="fac-name">' + label + ' Lv.' + fac.level + '</span>' +
+      '<span class="fac-output">' + output + facUnits[key] + '</span>' +
+      '<button class="fac-upgrade' + (maxed ? ' maxed' : '') + '" onclick="upgradeFactory(\'' + key + '\')">' +
+      (maxed ? 'MAX' : '$' + upgCost.toLocaleString()) + '</button>' +
+      '</div>';
+  }
+
+  html += '<div style="font-size:10px;color:#ffd700;margin-top:6px">Sats Ready: <b>' +
+    state.satBuildQueue + '</b> | Building: <b>' + state.satBuildRate + '/day</b></div>';
+  html += '<div style="font-size:9px;color:#666;margin-top:2px">Each sat: 20 Si + 10 Li + 15 Al + 5 RE</div>';
+
+  // Active supply event
+  if (state._supplyEventActive) {
+    const timeLeft = Math.max(0, state._supplyEventEnd - state.simTime);
+    const hoursLeft = (timeLeft / 3600).toFixed(1);
+    html += '<div class="supply-event-banner">' + state._supplyEventActive.msg.split('!')[0] + '! (' + hoursLeft + 'h left)</div>';
+  }
+
+  el.innerHTML = html;
 }
 
 // ============================================================
@@ -4032,7 +4550,10 @@ function updateUI() {
   }
   document.getElementById('hud-time').textContent = formatTime(state.simTime);
   document.getElementById('hud-credits').textContent = '$' + state.credits.toLocaleString();
-  document.getElementById('hud-day').textContent = state.day;
+  // Mission clock - show Year X, Day Y format
+  const missionYear = Math.floor((state.day - 1) / 365) + 1;
+  const missionDayInYear = ((state.day - 1) % 365) + 1;
+  document.getElementById('hud-mission').textContent = 'Year ' + missionYear + ', Day ' + missionDayInYear;
 
   // Controls - Constellation
   document.getElementById('val-fleet-size').textContent = state.constellation.totalSats + ' sats';
@@ -4070,7 +4591,6 @@ function updateUI() {
     const pct = Math.min(100, (sats / nextTarget * 100)).toFixed(0);
     msEl.innerHTML = `<span style="color:${color}">${milestone}</span><br>` +
       `<span style="color:#888">${sats.toLocaleString()} / ${nextTarget.toLocaleString()} sats (${pct}%)</span>`;
-  }
   }
   // Starship button state
   const ssBtn = document.getElementById('btn-launch-ss');
@@ -4203,6 +4723,38 @@ function updateUI() {
     document.getElementById('market-demand-display').textContent = 'Demand: ' + state.marketDemand.toFixed(2) + ' | Supply pressure: ' + (state.currentTFLOPS / 1000).toFixed(1) + 'k TFLOPS';
   } else {
     marketSection.style.display = 'none';
+  }
+
+  // Fleet Efficiency section
+  let efficiencySection = document.getElementById('fleet-efficiency-section');
+  if (!efficiencySection) {
+    efficiencySection = document.createElement('div');
+    efficiencySection.id = 'fleet-efficiency-section';
+    efficiencySection.className = 'panel-section';
+    efficiencySection.innerHTML = '<div class="panel-title">Fleet Efficiency</div>' +
+      '<div id="efficiency-metrics" style="font-size:11px"></div>';
+    document.getElementById('right-panel').appendChild(efficiencySection);
+  }
+  const effEl = document.getElementById('efficiency-metrics');
+  if (effEl) {
+    const revPerSatEff = state.constellation.activeSats > 0
+      ? '$' + Math.floor(state.totalCreditsEarned / state.constellation.activeSats).toLocaleString()
+      : '$0';
+    const powerDrawEff = computeTotalPowerDraw();
+    const tflopsPerWatt = powerDrawEff.total > 0
+      ? (state.currentTFLOPS / (powerDrawEff.total / 1000)).toFixed(2)
+      : '0';
+    const costPerTflopEff = state.currentTFLOPS > 0 && state.stats.totalCreditsSpentOnLaunches > 0
+      ? '$' + (state.stats.totalCreditsSpentOnLaunches / state.currentTFLOPS).toFixed(1)
+      : 'N/A';
+    const uptimeEff = state.constellation.totalSats > 0
+      ? (state.constellation.activeSats / state.constellation.totalSats * 100).toFixed(1) + '%'
+      : '0%';
+    effEl.innerHTML =
+      '<div class="control-row"><label>Rev / Satellite</label><span class="value" style="color:#ffd700">' + revPerSatEff + '</span></div>' +
+      '<div class="control-row"><label>TFLOPS / kW</label><span class="value" style="color:#4fc3f7">' + tflopsPerWatt + '</span></div>' +
+      '<div class="control-row"><label>Cost / TFLOP</label><span class="value" style="color:#ff9800">' + costPerTflopEff + '</span></div>' +
+      '<div class="control-row"><label>Fleet Uptime</label><span class="value" style="color:#66bb6a">' + uptimeEff + '</span></div>';
   }
 
   // Event log (throttled to avoid DOM thrash)
@@ -4429,6 +4981,88 @@ function setupControls() {
   // Save / Load buttons
   document.getElementById('btn-save').addEventListener('click', saveGame);
   document.getElementById('btn-load').addEventListener('click', loadGame);
+
+  // Stats overlay toggle
+  document.getElementById('btn-stats').addEventListener('click', () => {
+    const overlay = document.getElementById('stats-overlay');
+    if (overlay.classList.contains('hidden')) {
+      overlay.classList.remove('hidden');
+      renderStats();
+    } else {
+      overlay.classList.add('hidden');
+    }
+  });
+
+  // Keyboard shortcuts
+  document.addEventListener('keydown', function(e) {
+    // Don't trigger when typing in inputs
+    if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA' || e.target.tagName === 'SELECT') return;
+    // Don't trigger when overlay is showing
+    const shortcutsOverlay = document.getElementById('shortcuts-overlay');
+    if (shortcutsOverlay && shortcutsOverlay.classList.contains('show')) {
+      if (e.key === 'Escape' || e.key === '?') {
+        shortcutsOverlay.classList.remove('show');
+        e.preventDefault();
+      }
+      return;
+    }
+    const key = e.key;
+    switch(key) {
+      case '1':
+        e.preventDefault();
+        state.paused = true;
+        document.querySelectorAll('.speed-btn[data-speed]').forEach(b => b.classList.remove('active'));
+        document.querySelector('.speed-btn[data-speed="0"]').classList.add('active');
+        break;
+      case '2':
+        e.preventDefault();
+        state.paused = false; state.timeScale = 1;
+        document.querySelectorAll('.speed-btn[data-speed]').forEach(b => b.classList.remove('active'));
+        document.querySelector('.speed-btn[data-speed="1"]').classList.add('active');
+        break;
+      case '3':
+        e.preventDefault();
+        state.paused = false; state.timeScale = 5;
+        document.querySelectorAll('.speed-btn[data-speed]').forEach(b => b.classList.remove('active'));
+        document.querySelector('.speed-btn[data-speed="5"]').classList.add('active');
+        break;
+      case '4':
+        e.preventDefault();
+        state.paused = false; state.timeScale = 20;
+        document.querySelectorAll('.speed-btn[data-speed]').forEach(b => b.classList.remove('active'));
+        document.querySelector('.speed-btn[data-speed="20"]').classList.add('active');
+        break;
+      case '5':
+        e.preventDefault();
+        state.paused = false; state.timeScale = 100;
+        document.querySelectorAll('.speed-btn[data-speed]').forEach(b => b.classList.remove('active'));
+        document.querySelector('.speed-btn[data-speed="100"]').classList.add('active');
+        break;
+      case ' ':
+        e.preventDefault();
+        state.paused = !state.paused;
+        if (state.paused) {
+          document.querySelectorAll('.speed-btn[data-speed]').forEach(b => b.classList.remove('active'));
+          document.querySelector('.speed-btn[data-speed="0"]').classList.add('active');
+        } else {
+          document.querySelectorAll('.speed-btn[data-speed]').forEach(b => b.classList.remove('active'));
+          var activeSpeed = state.timeScale || 1;
+          var btn = document.querySelector('.speed-btn[data-speed="' + activeSpeed + '"]');
+          if (btn) btn.classList.add('active');
+        }
+        break;
+      case 'l': case 'L': scheduleLaunch('falcon9'); break;
+      case 's': case 'S': saveGame(); break;
+      case 't': case 'T':
+        if (state.orientationMode === 'solar') setOrientation('thermal');
+        else setOrientation('solar');
+        break;
+      case 'r': case 'R': repairSystem('chips'); break;
+      case '?':
+        { var ov = document.getElementById('shortcuts-overlay'); if (ov) ov.classList.toggle('show'); }
+        break;
+    }
+  });
 }
 
 // ============================================================
@@ -4481,37 +5115,73 @@ const TUTORIAL_STEPS = [
 ];
 
 let tutorialStep = 0;
+let tutorialOverlayClickBound = false;
+
+function safeStorageGet(key) {
+  try {
+    return window.localStorage.getItem(key);
+  } catch (e) {
+    return null;
+  }
+}
+
+function safeStorageSet(key, value) {
+  try {
+    window.localStorage.setItem(key, value);
+    return true;
+  } catch (e) {
+    return false;
+  }
+}
 
 function initTutorial() {
   const overlay = document.getElementById('tutorial-overlay');
-  if (localStorage.getItem('kessler_tutorial_done') === '1') {
+  const prevBtn = document.getElementById('tutorial-prev');
+  const nextBtn = document.getElementById('tutorial-next');
+  const skipBtn = document.getElementById('tutorial-skip');
+
+  if (!overlay || !prevBtn || !nextBtn || !skipBtn) return;
+
+  if (safeStorageGet('kessler_tutorial_done') === '1') {
     overlay.classList.add('hidden');
     return;
   }
+
   tutorialStep = 0;
   showTutorialStep();
 
-  document.getElementById('tutorial-next').addEventListener('click', () => {
+  nextBtn.onclick = () => {
     tutorialStep++;
     if (tutorialStep >= TUTORIAL_STEPS.length) {
       closeTutorial();
     } else {
       showTutorialStep();
     }
-  });
+  };
 
-  document.getElementById('tutorial-prev').addEventListener('click', () => {
+  prevBtn.onclick = () => {
     if (tutorialStep > 0) {
       tutorialStep--;
       showTutorialStep();
     }
-  });
+  };
 
-  document.getElementById('tutorial-skip').addEventListener('click', closeTutorial);
+  skipBtn.onclick = closeTutorial;
+
+  if (!tutorialOverlayClickBound) {
+    overlay.addEventListener('click', (e) => {
+      if (e.target === overlay) closeTutorial();
+    });
+    tutorialOverlayClickBound = true;
+  }
 }
 
 function showTutorialStep() {
   const step = TUTORIAL_STEPS[tutorialStep];
+  if (!step) {
+    closeTutorial();
+    return;
+  }
   document.getElementById('tutorial-title').textContent = step.title;
   document.getElementById('tutorial-text').textContent = step.text;
   document.getElementById('tutorial-step-display').textContent = (tutorialStep + 1) + ' / ' + TUTORIAL_STEPS.length;
@@ -4521,7 +5191,7 @@ function showTutorialStep() {
 
 function closeTutorial() {
   document.getElementById('tutorial-overlay').classList.add('hidden');
-  localStorage.setItem('kessler_tutorial_done', '1');
+  safeStorageSet('kessler_tutorial_done', '1');
 }
 
 // ============================================================
@@ -4576,6 +5246,28 @@ function saveGame() {
       radiatorTemp: state.radiatorTemp,
       config: { ...state.config },
       orbitalShells: state.orbitalShells.map(s => ({ ...s })),
+      stats: {
+        peakTFLOPS: state.stats.peakTFLOPS,
+        peakCredits: state.stats.peakCredits,
+        peakSats: state.stats.peakSats,
+        peakTemp: state.stats.peakTemp,
+        totalJobsCompleted: state.stats.totalJobsCompleted,
+        totalJobsFailed: state.stats.totalJobsFailed,
+        totalLaunches: state.stats.totalLaunches,
+        totalLaunchFailures: state.stats.totalLaunchFailures,
+        totalSatsLost: state.stats.totalSatsLost,
+        totalAttacks: state.stats.totalAttacks,
+        totalDebrisHits: state.stats.totalDebrisHits,
+        totalCreditsSpentOnLaunches: state.stats.totalCreditsSpentOnLaunches,
+      },
+      resources: JSON.parse(JSON.stringify(state.resources)),
+      factories: JSON.parse(JSON.stringify(state.factories)),
+      satBuildQueue: state.satBuildQueue,
+      satBuildRate: state.satBuildRate,
+      _supplyEventActive: state._supplyEventActive ? JSON.parse(JSON.stringify(state._supplyEventActive)) : null,
+      _supplyEventEnd: state._supplyEventEnd,
+      _lastSupplyEventCheck: state._lastSupplyEventCheck,
+      _lastConstellationMilestoneNotified: state._lastConstellationMilestoneNotified,
       ownedUpgrades: UPGRADES.filter(u => u.owned).map(u => u.id),
       rivals: state.rivals.map(r => ({
         id: r.id,
@@ -4610,7 +5302,10 @@ function saveGame() {
         surveillanceRisk: j.surveillanceRisk || false,
       })),
     };
-    localStorage.setItem('kessler_save', JSON.stringify(saveData));
+    if (!safeStorageSet('kessler_save', JSON.stringify(saveData))) {
+      addLog('error', 'Failed to save game: browser storage unavailable');
+      return;
+    }
     addLog('success', 'Game saved');
   } catch (e) {
     addLog('error', 'Failed to save game: ' + e.message);
@@ -4619,7 +5314,7 @@ function saveGame() {
 
 function loadGame() {
   try {
-    const raw = localStorage.getItem('kessler_save');
+    const raw = safeStorageGet('kessler_save');
     if (!raw) {
       addLog('warn', 'No save data found');
       return;
@@ -4667,6 +5362,15 @@ function loadGame() {
     state.debrisWarning = saveData.debrisWarning || false;
     state.radiatorTemp = saveData.radiatorTemp || 290;
     state.fleetPower = saveData.fleetPower !== undefined ? saveData.fleetPower : 100;
+    // Restore supply chain
+    if (saveData.resources) state.resources = saveData.resources;
+    if (saveData.factories) state.factories = saveData.factories;
+    if (saveData.satBuildQueue !== undefined) state.satBuildQueue = saveData.satBuildQueue;
+    if (saveData.satBuildRate !== undefined) state.satBuildRate = saveData.satBuildRate;
+    state._supplyEventActive = saveData._supplyEventActive || null;
+    state._supplyEventEnd = saveData._supplyEventEnd || 0;
+    state._lastSupplyEventCheck = saveData._lastSupplyEventCheck || 0;
+    state._lastConstellationMilestoneNotified = saveData._lastConstellationMilestoneNotified || 0;
     // Restore constellation (backward compat: if not present, init defaults)
     if (saveData.constellation) {
       state.constellation = saveData.constellation;
@@ -4684,6 +5388,30 @@ function loadGame() {
       state.launchVehicles = saveData.launchVehicles;
     }
     state.lastLaunchTime = saveData.lastLaunchTime || 0;
+
+    // Restore stats (summary values only; history rebuilt during play)
+    if (saveData.stats) {
+      state.stats.peakTFLOPS = saveData.stats.peakTFLOPS || 0;
+      state.stats.peakCredits = saveData.stats.peakCredits || 0;
+      state.stats.peakSats = saveData.stats.peakSats || 0;
+      state.stats.peakTemp = saveData.stats.peakTemp || 0;
+      state.stats.totalJobsCompleted = saveData.stats.totalJobsCompleted || 0;
+      state.stats.totalJobsFailed = saveData.stats.totalJobsFailed || 0;
+      state.stats.totalLaunches = saveData.stats.totalLaunches || 0;
+      state.stats.totalLaunchFailures = saveData.stats.totalLaunchFailures || 0;
+      state.stats.totalSatsLost = saveData.stats.totalSatsLost || 0;
+      state.stats.totalAttacks = saveData.stats.totalAttacks || 0;
+      state.stats.totalDebrisHits = saveData.stats.totalDebrisHits || 0;
+      state.stats.totalCreditsSpentOnLaunches = saveData.stats.totalCreditsSpentOnLaunches || 0;
+    }
+    // Clear history arrays (they rebuild during play)
+    state.stats.history = [];
+    state.stats.creditsHistory = [];
+    state.stats.tflopsHistory = [];
+    state.stats.tempHistory = [];
+    state.stats.satsHistory = [];
+    state.stats.lastRecordTime = 0;
+
     // If flare is active but no end time, set a reasonable one
     if (state.solarFlareActive && !state._flareEndTime) {
       state._flareEndTime = state.simTime + 3600; // 1 hour from now
@@ -4770,6 +5498,201 @@ function loadGame() {
 setInterval(saveGame, 5 * 60 * 1000);
 
 // ============================================================
+// STATS TRACKING & ANALYTICS
+// ============================================================
+function recordStats() {
+  // Record every 30 seconds of sim time
+  if (state.simTime - state.stats.lastRecordTime < 30) return;
+  state.stats.lastRecordTime = state.simTime;
+
+  // Track peaks
+  if (state.currentTFLOPS > state.stats.peakTFLOPS) state.stats.peakTFLOPS = state.currentTFLOPS;
+  if (state.credits > state.stats.peakCredits) state.stats.peakCredits = state.credits;
+  if (state.constellation.activeSats > state.stats.peakSats) state.stats.peakSats = state.constellation.activeSats;
+  if (state.coreTemp > state.stats.peakTemp) state.stats.peakTemp = state.coreTemp;
+
+  // Record data point
+  const dataPoint = {
+    time: state.simTime,
+    credits: state.credits,
+    tflops: state.currentTFLOPS,
+    temp: state.coreTemp,
+    sats: state.constellation.activeSats,
+    debris: state.orbitalDebrisLevel,
+  };
+  state.stats.history.push(dataPoint);
+  if (state.stats.history.length > 200) state.stats.history.shift();
+
+  // Record sparkline histories
+  state.stats.creditsHistory.push(state.credits);
+  if (state.stats.creditsHistory.length > 100) state.stats.creditsHistory.shift();
+
+  state.stats.tflopsHistory.push(state.currentTFLOPS);
+  if (state.stats.tflopsHistory.length > 100) state.stats.tflopsHistory.shift();
+
+  state.stats.tempHistory.push(state.coreTemp);
+  if (state.stats.tempHistory.length > 100) state.stats.tempHistory.shift();
+
+  state.stats.satsHistory.push(state.constellation.activeSats);
+  if (state.stats.satsHistory.length > 100) state.stats.satsHistory.shift();
+}
+
+function drawSparkline(canvasId, data, color) {
+  const canvas = document.getElementById(canvasId);
+  if (!canvas || data.length < 2) return;
+  const sCtx = canvas.getContext('2d');
+  const w = canvas.width;
+  const h = canvas.height;
+  sCtx.clearRect(0, 0, w, h);
+
+  const min = Math.min(...data);
+  const max = Math.max(...data);
+  const range = max - min || 1;
+
+  // Draw fill
+  sCtx.beginPath();
+  sCtx.moveTo(0, h);
+  for (let i = 0; i < data.length; i++) {
+    const x = (i / (data.length - 1)) * w;
+    const y = h - ((data[i] - min) / range) * (h - 4) - 2;
+    sCtx.lineTo(x, y);
+  }
+  sCtx.lineTo(w, h);
+  sCtx.closePath();
+  sCtx.fillStyle = color.replace(')', ',0.1)').replace('rgb', 'rgba');
+  sCtx.fill();
+
+  // Draw line
+  sCtx.beginPath();
+  for (let i = 0; i < data.length; i++) {
+    const x = (i / (data.length - 1)) * w;
+    const y = h - ((data[i] - min) / range) * (h - 4) - 2;
+    if (i === 0) sCtx.moveTo(x, y);
+    else sCtx.lineTo(x, y);
+  }
+  sCtx.strokeStyle = color;
+  sCtx.lineWidth = 1.5;
+  sCtx.stroke();
+
+  // Draw current value dot
+  const lastX = w;
+  const lastY = h - ((data[data.length - 1] - min) / range) * (h - 4) - 2;
+  sCtx.fillStyle = color;
+  sCtx.beginPath();
+  sCtx.arc(lastX - 1, lastY, 2.5, 0, Math.PI * 2);
+  sCtx.fill();
+
+  // Min/max labels
+  sCtx.fillStyle = '#666';
+  sCtx.font = '8px monospace';
+  sCtx.textAlign = 'left';
+  sCtx.fillText(formatStatNumber(min), 2, h - 2);
+  sCtx.fillText(formatStatNumber(max), 2, 8);
+}
+
+function formatStatNumber(n) {
+  if (n >= 1000000) return (n / 1000000).toFixed(1) + 'M';
+  if (n >= 1000) return (n / 1000).toFixed(1) + 'K';
+  return Math.round(n).toString();
+}
+
+function renderStats() {
+  const grid = document.getElementById('stats-grid');
+  const charts = document.getElementById('stats-charts');
+  if (!grid || !charts) return;
+
+  const year = Math.floor((state.day - 1) / 365) + 1;
+  const dayInYear = ((state.day - 1) % 365) + 1;
+  const uptimePct = state.constellation.totalSats > 0
+    ? (state.constellation.activeSats / state.constellation.totalSats * 100).toFixed(1)
+    : '0.0';
+  const revPerSat = state.constellation.activeSats > 0
+    ? Math.floor(state.totalCreditsEarned / state.constellation.activeSats)
+    : 0;
+  const costPerTflop = state.currentTFLOPS > 0 && state.stats.totalCreditsSpentOnLaunches > 0
+    ? (state.stats.totalCreditsSpentOnLaunches / state.currentTFLOPS).toFixed(1)
+    : 'N/A';
+
+  grid.innerHTML = `
+    <div class="stat-card">
+      <div class="stat-number">$${state.totalCreditsEarned.toLocaleString()}</div>
+      <div class="stat-label">Total Credits Earned</div>
+    </div>
+    <div class="stat-card">
+      <div class="stat-number">${state.stats.peakSats}</div>
+      <div class="stat-label">Fleet Size (Peak)</div>
+    </div>
+    <div class="stat-card">
+      <div class="stat-number">${Math.floor(state.currentTFLOPS).toLocaleString()}</div>
+      <div class="stat-label">Current TFLOPS</div>
+    </div>
+    <div class="stat-card">
+      <div class="stat-number">${state.stats.totalJobsCompleted}</div>
+      <div class="stat-label">Jobs Completed</div>
+    </div>
+    <div class="stat-card">
+      <div class="stat-number">${state.stats.totalLaunches} / ${state.stats.totalLaunchFailures}</div>
+      <div class="stat-label">Launches (ok / fail)</div>
+    </div>
+    <div class="stat-card">
+      <div class="stat-number">${state.stats.totalSatsLost}</div>
+      <div class="stat-label">Satellites Lost</div>
+    </div>
+    <div class="stat-card">
+      <div class="stat-number">${Math.round(state.stats.peakTemp)} K</div>
+      <div class="stat-label">Peak Temperature</div>
+    </div>
+    <div class="stat-card">
+      <div class="stat-number">${state.orbitalDebrisLevel.toFixed(1)}%</div>
+      <div class="stat-label">Debris Level</div>
+    </div>
+    <div class="stat-card">
+      <div class="stat-number">Y${year} D${dayInYear}</div>
+      <div class="stat-label">Days Survived: ${state.day}</div>
+    </div>
+    <div class="stat-card">
+      <div class="stat-number">${uptimePct}%</div>
+      <div class="stat-label">Fleet Uptime</div>
+    </div>
+    <div class="stat-card">
+      <div class="stat-number">$${revPerSat.toLocaleString()}</div>
+      <div class="stat-label">Revenue / Satellite</div>
+    </div>
+    <div class="stat-card">
+      <div class="stat-number">${costPerTflop}</div>
+      <div class="stat-label">Cost / TFLOP</div>
+    </div>
+  `;
+
+  charts.innerHTML = `
+    <div class="sparkline-container">
+      <div class="sparkline-label">Credits over time</div>
+      <canvas id="spark-credits" width="200" height="40"></canvas>
+    </div>
+    <div class="sparkline-container">
+      <div class="sparkline-label">TFLOPS over time</div>
+      <canvas id="spark-tflops" width="200" height="40"></canvas>
+    </div>
+    <div class="sparkline-container">
+      <div class="sparkline-label">Temperature over time</div>
+      <canvas id="spark-temp" width="200" height="40"></canvas>
+    </div>
+    <div class="sparkline-container">
+      <div class="sparkline-label">Fleet size over time</div>
+      <canvas id="spark-sats" width="200" height="40"></canvas>
+    </div>
+  `;
+
+  // Draw sparklines after DOM update
+  requestAnimationFrame(() => {
+    drawSparkline('spark-credits', state.stats.creditsHistory, 'rgb(255,215,0)');
+    drawSparkline('spark-tflops', state.stats.tflopsHistory, 'rgb(79,195,247)');
+    drawSparkline('spark-temp', state.stats.tempHistory, 'rgb(255,107,53)');
+    drawSparkline('spark-sats', state.stats.satsHistory, 'rgb(102,187,106)');
+  });
+}
+
+// ============================================================
 // GAME LOOP
 // ============================================================
 let lastFrameTime = 0;
@@ -4785,6 +5708,7 @@ function gameLoop(timestamp) {
   renderUpgrades();
   renderCombatPanel();
   renderCargoOffers();
+  renderSupplyChain();
 
   requestAnimationFrame(gameLoop);
 }
